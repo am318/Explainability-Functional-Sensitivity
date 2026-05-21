@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from utilities import *
 
+import json
 
 # ============================================================
 # Configuration
@@ -23,10 +24,10 @@ class Config:
     n_hidden: int = 3
     hidden_width: int = 64
     lr: float = 1e-3
-    epochs: int = 10000
-    checkpoint_interval: int = epochs // 10
+    epochs: int = 20000
+    checkpoint_interval: int = epochs // 20
     topk_frac: float = 0.10
-    compare_epoch: int = epochs // 10
+    compare_epoch: int = epochs // 20
 
 
 cfg = Config()
@@ -34,7 +35,6 @@ cfg = Config()
 torch.manual_seed(cfg.seed)
 np.random.seed(cfg.seed)
 
-# MPS-safe device selection
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 else:
@@ -47,21 +47,7 @@ print(f"Using device: {device}")
 # Dataset
 # ============================================================
 
-# noise_multiplier = 1e-2
-
-# x_train = torch.linspace(-1.2, 1.2, cfg.n_train, dtype=torch.float32).unsqueeze(1)
-# y_train = x_train ** 4 - x_train ** 2 + noise_multiplier * torch.randn_like(x_train)
-
-# x_test = torch.linspace(-1.2, 1.2, cfg.n_test, dtype=torch.float32).unsqueeze(1)
-# y_test = x_test ** 4 - x_test ** 2 + noise_multiplier * torch.randn_like(x_test)
-
-# x_train = x_train.to(device)
-# y_train = y_train.to(device)
-
-# x_test = x_test.to(device)
-# y_test = y_test.to(device)
-
-noise_multiplier = 1e-1  # increase if you want a harder observation model
+noise_multiplier = 1e-1 
 
 def vanderpol_rhs(t, state, mu=3.0):
     x, v = state[..., 0:1], state[..., 1:2]
@@ -93,7 +79,6 @@ y0 = torch.tensor([2.0, 0.0], dtype=torch.float32)  # [position, velocity]
 traj_train = simulate_vanderpol(t_train, y0, mu=3.0)
 traj_test  = simulate_vanderpol(t_test,  y0, mu=3.0)
 
-# observe only the position with noise
 x_train = t_train.unsqueeze(1).to(device)
 y_train = (traj_train[:, 0:1] + noise_multiplier * torch.randn(cfg.n_train, 1)).to(device)
 
@@ -169,7 +154,7 @@ history = {
     "ref_topk_mass": [],
 }
 
-# second reference snapshot
+# reference snapshot
 S_ref = None
 C_ref = None
 ref_topk_idx = None
@@ -208,7 +193,6 @@ for epoch in range(cfg.epochs):
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
 
-        # Capture the second reference snapshot at or after compare_epoch
         if (S_ref is None) and (epoch >= cfg.compare_epoch):
             S_ref = S_curr.detach().clone()
             C_ref = compute_covariance(J).detach().clone()
@@ -307,76 +291,46 @@ labels = [line.get_label() for line in lines]
 ax.legend(lines, labels, loc="best")
 
 # 4. Covariance matrix at init
-im0 = axes[1, 0].imshow(C_init.detach().cpu().numpy(), aspect="auto")
+im0 = axes[1, 0].imshow(C_init.detach().cpu().numpy(), aspect="auto", cmap='RdBu_r')
 axes[1, 0].set_title("Sensitivity covariance at init")
 plt.colorbar(im0, ax=axes[1, 0])
 
 # 5. Covariance matrix at end
-im1 = axes[1, 1].imshow(C_final.detach().cpu().numpy(), aspect="auto")
-axes[1, 1].set_title("Sensitivity covariance after training")
+im1 = axes[1, 1].imshow(np.abs((C_final-C_init).detach().cpu().numpy()), aspect="auto", cmap='RdBu_r')
+axes[1, 1].set_title("Sensitivity covariance difference after training")
 plt.colorbar(im1, ax=axes[1, 1])
 
 # 6. Eigenvalue spectrum
-axes[1, 2].plot(eig_init.cpu().numpy(), label="initial")
+axes[1, 2].plot(eig_init.detach().cpu().numpy(), label="initial")
 if eig_ref is not None:
-    axes[1, 2].plot(eig_ref.cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
-axes[1, 2].plot(eig_final.cpu().numpy(), label="final")
+    axes[1, 2].plot(eig_ref.detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
+axes[1, 2].plot(eig_final.detach().cpu().numpy(), label="final")
 axes[1, 2].set_yscale("log")
 axes[1, 2].set_title("Sensitivity covariance eigenspectrum")
 axes[1, 2].legend()
 
 plt.tight_layout()
-plt.show()
-
-
-# ============================================================
-# Additional sensitivity distribution plots
-# ============================================================
-
-fig, axes = plt.subplots(1, 3 if S_ref is not None else 2, figsize=(16, 4))
-
-axes[0].hist(S_init.detach().cpu().numpy(), bins=20)
-axes[0].set_title("Parameter sensitivities at init")
-
-if S_ref is not None:
-    axes[1].hist(S_ref.detach().cpu().numpy(), bins=20)
-    axes[1].set_title(f"Parameter sensitivities at ref epoch {ref_epoch}")
-    axes[2].hist(S_final.detach().cpu().numpy(), bins=20)
-    axes[2].set_title("Parameter sensitivities after training")
-else:
-    axes[1].hist(S_final.detach().cpu().numpy(), bins=20)
-    axes[1].set_title("Parameter sensitivities after training")
-
-plt.tight_layout()
-plt.show()
+plt.savefig('Plots/Initial_Experiment.pdf')
+# plt.show()
 
 
 # ============================================================
 # Final summary
 # ============================================================
 
-print("\nFinal summary")
-print("=============")
-print(f"parameter count: {parameter_count(model)}")
-print(f"final train loss: {history['train_loss'][-1]:.6e}")
-print(f"final test loss: {history['test_loss'][-1]:.6e}")
-print(f"final Spearman(init, final): {spearman_corr(S_init, S_final):.3f}")
-print(
-    f"final mass in init top-{int(100 * cfg.topk_frac)}%: "
-    f"{mass_on_indices(S_final, init_topk_idx):.3f}"
-)
+summary = {
+    "parameter_count": parameter_count(model),
+    "final_train_loss": history["train_loss"][-1],
+    "final_test_loss": history["test_loss"][-1],
+    "final_spearman_init_final": spearman_corr(S_init, S_final),
+    "final_mass_in_init_topk": mass_on_indices(S_final, init_topk_idx),
+    "reference_epoch": ref_epoch if S_ref is not None else None,
+    "final_spearman_ref_final": spearman_corr(S_ref, S_final) if S_ref is not None else None,
+    "final_mass_in_ref_topk": mass_on_indices(S_final, ref_topk_idx) if S_ref is not None else None,
+    "largest_initial_eigenvalue": float(eig_init[0].item()),
+    "largest_ref_eigenvalue": float(eig_ref[0].item()) if eig_ref is not None else None,
+    "largest_final_eigenvalue": float(eig_final[0].item()),
+}
 
-if S_ref is not None:
-    print(f"reference epoch captured at: {ref_epoch}")
-    print(f"final Spearman(ref, final): {spearman_corr(S_ref, S_final):.3f}")
-    print(
-        f"final mass in ref top-{int(100 * cfg.topk_frac)}%: "
-        f"{mass_on_indices(S_final, ref_topk_idx):.3f}"
-    )
-else:
-    print("reference snapshot was not captured; increase epochs or lower compare_epoch.")
-
-print(f"largest initial eigenvalue: {eig_init[0].item():.6e}")
-if eig_ref is not None:
-    print(f"largest ref eigenvalue: {eig_ref[0].item():.6e}")
-print(f"largest final eigenvalue: {eig_final[0].item():.6e}")
+with open("Plots/final_summary.json", "w") as f:
+    json.dump(summary, f, indent=2)

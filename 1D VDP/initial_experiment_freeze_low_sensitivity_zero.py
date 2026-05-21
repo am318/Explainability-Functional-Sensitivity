@@ -7,6 +7,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from utilities import *
+
+import json
 
 # ============================================================
 # Configuration
@@ -20,10 +23,10 @@ class Config:
     n_hidden: int = 3
     hidden_width: int = 64
     lr: float = 1e-3
-    epochs: int = 10000
-    checkpoint_interval: int = epochs // 10
+    epochs: int = 20000
+    checkpoint_interval: int = epochs // 20
     topk_frac: float = 0.40
-    compare_epoch: int = epochs // 10
+    compare_epoch: int = epochs // 20
 
 
 cfg = Config()
@@ -31,7 +34,6 @@ cfg = Config()
 torch.manual_seed(cfg.seed)
 np.random.seed(cfg.seed)
 
-# MPS-safe device selection
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 else:
@@ -44,21 +46,7 @@ print(f"Using device: {device}")
 # Dataset
 # ============================================================
 
-# noise_multiplier = 1e-2
-
-# x_train = torch.linspace(-1.2, 1.2, cfg.n_train, dtype=torch.float32).unsqueeze(1)
-# y_train = x_train ** 4 - x_train ** 2 + noise_multiplier * torch.randn_like(x_train)
-
-# x_test = torch.linspace(-1.2, 1.2, cfg.n_test, dtype=torch.float32).unsqueeze(1)
-# y_test = x_test ** 4 - x_test ** 2 + noise_multiplier * torch.randn_like(x_test)
-
-# x_train = x_train.to(device)
-# y_train = y_train.to(device)
-
-# x_test = x_test.to(device)
-# y_test = y_test.to(device)
-
-noise_multiplier = 1e-1  # increase if you want a harder observation model
+noise_multiplier = 1e-1
 
 def vanderpol_rhs(t, state, mu=3.0):
     x, v = state[..., 0:1], state[..., 1:2]
@@ -90,7 +78,6 @@ y0 = torch.tensor([2.0, 0.0], dtype=torch.float32)  # [position, velocity]
 traj_train = simulate_vanderpol(t_train, y0, mu=3.0)
 traj_test  = simulate_vanderpol(t_test,  y0, mu=3.0)
 
-# observe only the position with noise
 x_train = t_train.unsqueeze(1).to(device)
 y_train = (traj_train[:, 0:1] + noise_multiplier * torch.randn(cfg.n_train, 1)).to(device)
 
@@ -124,147 +111,6 @@ class SmallMLP(nn.Module):
 
 
 model = SmallMLP(cfg.hidden_width).to(device)
-
-
-# ============================================================
-# Utilities
-# ============================================================
-
-def flatten_grads(grads):
-    return torch.cat([g.reshape(-1) for g in grads])
-
-
-def parameter_count(model):
-    return sum(p.numel() for p in model.parameters())
-
-
-def compute_parameter_jacobian(model, x):
-    """
-    J shape:
-        [N_data, N_parameters]
-    Row k:
-        df(x_k)/dtheta
-    """
-    params = list(model.parameters())
-    rows = []
-
-    x = x.to(next(model.parameters()).device)
-
-    for xi in x:
-        yi = model(xi.unsqueeze(0)).squeeze()
-
-        grads = torch.autograd.grad(
-            yi,
-            params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=False,
-        )
-
-        row = flatten_grads(grads)
-        rows.append(row)
-
-    return torch.stack(rows)
-
-
-def compute_covariance(J):
-    """
-    C = (1/N) J^T J
-    """
-    return (J.T @ J) / J.shape[0]
-
-
-def sensitivity_scores(J):
-    """
-    S_i = E[(df/dtheta_i)^2]
-    """
-    return torch.mean(J ** 2, dim=0)
-
-
-def eigvals_from_covariance(C):
-    C_cpu = C.detach().cpu().numpy()
-    eig = np.linalg.eigvalsh(C_cpu)
-    eig = np.clip(eig, 0.0, None)
-    eig = eig[::-1]
-    return torch.from_numpy(eig.astype(np.float32))
-
-
-def topk_indices(scores, frac=0.1):
-    k = max(1, int(frac * scores.numel()))
-    return torch.topk(scores, k).indices
-
-
-def mass_on_indices(scores, indices):
-    return (scores[indices].sum() / (scores.sum() + 1e-12)).item()
-
-
-def spearman_corr(a, b):
-    """
-    Rank correlation without scipy.
-    """
-    a = a.detach().cpu().numpy()
-    b = b.detach().cpu().numpy()
-
-    ra = np.argsort(np.argsort(a)).astype(np.float32)
-    rb = np.argsort(np.argsort(b)).astype(np.float32)
-
-    sa = ra.std()
-    sb = rb.std()
-
-    if sa < 1e-12 or sb < 1e-12:
-        return 0.0
-
-    return float(np.corrcoef(ra, rb)[0, 1])
-
-
-def build_trainable_masks(model, scores, frac=0.1):
-    """
-    Build boolean masks for each parameter tensor.
-    True  -> keep active
-    False -> zero after compare_epoch
-
-    The masks are defined globally across all parameters by top-k functional
-    sensitivity at the compare snapshot.
-    """
-    keep_idx = topk_indices(scores, frac=frac)
-    global_mask = torch.zeros_like(scores, dtype=torch.bool)
-    global_mask[keep_idx] = True
-
-    masks = []
-    offset = 0
-    for p in model.parameters():
-        n = p.numel()
-        masks.append(global_mask[offset: offset + n].view_as(p).detach().clone())
-        offset += n
-
-    if offset != scores.numel():
-        raise RuntimeError(
-            f"Mask construction failed: consumed {offset} scores, expected {scores.numel()}."
-        )
-
-    return masks
-
-
-def apply_masks_to_weights_and_state(model, optimizer, masks):
-    """
-    Clamp low-sensitivity parameters to zero and clear their Adam state.
-    This prevents post-compare updates and momentum carry-over.
-    """
-    for p, mask in zip(model.parameters(), masks):
-        p.data.mul_(mask)
-
-        if p.grad is not None:
-            p.grad.mul_(mask)
-
-        state = optimizer.state.get(p, None)
-        if not state:
-            continue
-
-        if "exp_avg" in state:
-            state["exp_avg"].mul_(mask)
-        if "exp_avg_sq" in state:
-            state["exp_avg_sq"].mul_(mask)
-
 
 # ============================================================
 # Initial state and initial sensitivities
@@ -324,7 +170,6 @@ for epoch in range(cfg.epochs):
     model.train()
     optimizer.zero_grad()
 
-    # Keep low-sensitivity parameters clamped to zero before every forward pass.
     if trainable_masks is not None:
         apply_masks_to_weights_and_state(model, optimizer, trainable_masks)
 
@@ -332,18 +177,14 @@ for epoch in range(cfg.epochs):
     loss = criterion(pred, y_train)
     loss.backward()
 
-    # Maintain zeroed weights and clear any optimizer state drift.
     if trainable_masks is not None:
         apply_masks_to_weights_and_state(model, optimizer, trainable_masks)
 
     optimizer.step()
 
-    # Re-clamp after the update in case the optimizer nudged any active state.
     if trainable_masks is not None:
         apply_masks_to_weights_and_state(model, optimizer, trainable_masks)
 
-    # Capture the compare snapshot exactly at compare_epoch, after the update
-    # for that epoch, so subsequent epochs are frozen.
     if (epoch == cfg.compare_epoch) and (S_ref is None):
         model.eval()
         J_ref = compute_parameter_jacobian(model, x_train)
@@ -512,35 +353,27 @@ else:
     axes[1].set_title("Parameter sensitivities after training")
 
 plt.tight_layout()
-plt.show()
+plt.savefig('Plots/Initial_Experiment_Zero.pdf')
+# plt.show()
 
 
 # ============================================================
 # Final summary
 # ============================================================
 
-print("\nFinal summary")
-print("=============")
-print(f"parameter count: {parameter_count(model)}")
-print(f"final train loss: {history['train_loss'][-1]:.6e}")
-print(f"final test loss: {history['test_loss'][-1]:.6e}")
-print(f"final Spearman(init, final): {spearman_corr(S_init, S_final):.3f}")
-print(
-    f"final mass in init top-{int(100 * cfg.topk_frac)}%: "
-    f"{mass_on_indices(S_final, init_topk_idx):.3f}"
-)
+summary = {
+    "parameter_count": parameter_count(model),
+    "final_train_loss": history["train_loss"][-1],
+    "final_test_loss": history["test_loss"][-1],
+    "final_spearman_init_final": spearman_corr(S_init, S_final),
+    "final_mass_in_init_topk": mass_on_indices(S_final, init_topk_idx),
+    "reference_epoch": ref_epoch if S_ref is not None else None,
+    "final_spearman_ref_final": spearman_corr(S_ref, S_final) if S_ref is not None else None,
+    "final_mass_in_ref_topk": mass_on_indices(S_final, ref_topk_idx) if S_ref is not None else None,
+    "largest_initial_eigenvalue": float(eig_init[0].item()),
+    "largest_ref_eigenvalue": float(eig_ref[0].item()) if eig_ref is not None else None,
+    "largest_final_eigenvalue": float(eig_final[0].item()),
+}
 
-if S_ref is not None:
-    print(f"reference epoch captured at: {ref_epoch}")
-    print(f"final Spearman(ref, final): {spearman_corr(S_ref, S_final):.3f}")
-    print(
-        f"final mass in ref top-{int(100 * cfg.topk_frac)}%: "
-        f"{mass_on_indices(S_final, ref_topk_idx):.3f}"
-    )
-else:
-    print("reference snapshot was not captured; increase epochs or lower compare_epoch.")
-
-print(f"largest initial eigenvalue: {eig_init[0].item():.6e}")
-if eig_ref is not None:
-    print(f"largest ref eigenvalue: {eig_ref[0].item():.6e}")
-print(f"largest final eigenvalue: {eig_final[0].item():.6e}")
+with open("Plots/final_summary.json", "w") as f:
+    json.dump(summary, f, indent=2)

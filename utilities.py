@@ -166,3 +166,51 @@ def spearman_corr(a: torch.Tensor, b: torch.Tensor) -> float:
     ra_np = ra.cpu().numpy()
     rb_np = rb.cpu().numpy()
     return float(np.corrcoef(ra_np, rb_np)[0, 1])
+
+def build_trainable_masks(model, scores, frac=0.1):
+    """
+    Build boolean masks for each parameter tensor.
+    True  -> keep active
+    False -> zero after compare_epoch
+
+    The masks are defined globally across all parameters by top-k functional
+    sensitivity at the compare snapshot.
+    """
+    keep_idx = topk_indices(scores, frac=frac)
+    global_mask = torch.zeros_like(scores, dtype=torch.bool)
+    global_mask[keep_idx] = True
+
+    masks = []
+    offset = 0
+    for p in model.parameters():
+        n = p.numel()
+        masks.append(global_mask[offset: offset + n].view_as(p).detach().clone())
+        offset += n
+
+    if offset != scores.numel():
+        raise RuntimeError(
+            f"Mask construction failed: consumed {offset} scores, expected {scores.numel()}."
+        )
+
+    return masks
+
+
+def apply_masks_to_weights_and_state(model, optimizer, masks):
+    """
+    Clamp low-sensitivity parameters to zero and clear their Adam state.
+    This prevents post-compare updates and momentum carry-over.
+    """
+    for p, mask in zip(model.parameters(), masks):
+        p.data.mul_(mask)
+
+        if p.grad is not None:
+            p.grad.mul_(mask)
+
+        state = optimizer.state.get(p, None)
+        if not state:
+            continue
+
+        if "exp_avg" in state:
+            state["exp_avg"].mul_(mask)
+        if "exp_avg_sq" in state:
+            state["exp_avg_sq"].mul_(mask)
