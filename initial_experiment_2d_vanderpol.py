@@ -30,8 +30,8 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 2 # 4
-    hidden_width: int = 48 # 64
+    n_hidden: int = 4
+    hidden_width: int = 64
     lr: float = 1e-3
     epochs: int = 100000
     checkpoint_interval: int = epochs // 25
@@ -47,6 +47,8 @@ class Config:
 
     noise_multiplier: float = 5e-2
     plot_grid_size: int = 45
+
+    l1_lambda: float = 1e-3
 
 
 cfg = Config()
@@ -221,7 +223,18 @@ for epoch in range(cfg.epochs + 1):
     optimizer.zero_grad(set_to_none=True)
 
     pred = model(x_train)
-    loss = criterion(pred, y_train)
+    task_loss = criterion(pred, y_train)
+
+    l1_penalty = sum(
+        p.abs().sum()
+        for name, p in model.named_parameters()
+        if p.requires_grad and "bias" not in name
+    )
+
+    loss = task_loss + cfg.l1_lambda * l1_penalty
+
+    #     loss = criterion(pred, y_train)
+
     loss.backward()
     optimizer.step()
 
@@ -369,15 +382,17 @@ axes[1, 1].set_ylabel("parameter index")
 plt.colorbar(im1, ax=axes[1, 1])
 
 # 6. Eigenspectrum
-axes[1, 2].plot((eig_init/(eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
+eig_final_erank = effective_rank(eig_final)
+
+axes[1, 2].plot((eig_init / (eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
 if eig_ref is not None:
-    axes[1, 2].plot((eig_ref/(eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
-axes[1, 2].plot((eig_final/(eig_final.max()+ 1e-30)).detach().cpu().numpy(), label="final")
+    axes[1, 2].plot((eig_ref / (eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
+axes[1, 2].plot((eig_final / (eig_final.max() + 1e-30)).detach().cpu().numpy(), label="final")
 axes[1, 2].set_yscale("log")
-axes[1, 2].set_title("Sensitivity covariance eigenspectrum")
+axes[1, 2].set_title(f"Sensitivity covariance eigenspectrum (effective rank = {eig_final_erank:.2f})")
 axes[1, 2].legend()
-axes[1, 2].set_xlabel('Number')
-axes[1, 2].set_ylabel('Eigenvalue')
+axes[1, 2].set_xlabel("Number")
+axes[1, 2].set_ylabel("Eigenvalue")
 
 # 7. Loss curves
 axes[2, 0].plot(history["epoch"], history["train_loss"], label="train")
@@ -497,255 +512,127 @@ plt.close(fig)
 
 
 # ============================================================
-# Additional ordered sensitivity diagnostics
+# Additional low-rank structure diagnostics
 # ============================================================
 
-# Order parameters by persistent low sensitivity.
-# Alternative keys you can swap in:
-# key = S_init
-# key = S_final
-# key = torch.abs(S_final - S_init)
+eps = 1e-30
+
+# Reuse the same idea: order parameters by persistent low sensitivity.
 key = torch.min(S_init, S_final)
 perm = torch.argsort(key)
 
-S_init_ord = S_init[perm]
-S_final_ord = S_final[perm]
+# Reorder covariance matrices for visualization.
+C_init_ord_n = C_init_n[perm][:, perm]
+C_final_ord_n = C_final_n[perm][:, perm]
 
-# Reorder covariance matrices with the same permutation.
-C_init_ord = C_init[perm][:, perm]
-C_final_ord = C_final[perm][:, perm]
+# Eigen-decompositions of normalized covariance matrices.
+# eigh returns ascending eigenvalues; flip to descending.
+evals_init, evecs_init = torch.linalg.eigh(C_init_n.cpu())
+evals_final, evecs_final = torch.linalg.eigh(C_final_n.cpu())
 
-# Normalized versions for display.
-eps = 1e-30
-S_init_ord_n = S_init_ord / (S_init_ord.sum() + eps)
-S_final_ord_n = S_final_ord / (S_final_ord.sum() + eps)
+evals_init = evals_init.flip(0)
+evecs_init = evecs_init.flip(1).to(device)
 
-# Use the same normalisation as before for covariance heatmaps.
-C_init_ord_n = normalize_covariance(C_init_ord)
-C_final_ord_n = normalize_covariance(C_final_ord)
+evals_final = evals_final.flip(0)
+evecs_final = evecs_final.flip(1).to(device)
 
-fig2, axes2 = plt.subplots(2, 2, figsize=(16, 12))
+# Numerical cleanup for cumulative variance / residual curves.
+evals_init_pos = evals_init.clamp_min(0.0)
+evals_final_pos = evals_final.clamp_min(0.0)
 
-# 1. Ordered sensitivities: initial and final, sorted by persistent low-sensitivity key.
-rank = np.arange(len(S_init_ord_n))
-axes2[0, 0].plot(rank, S_init_ord_n.detach().cpu().numpy(), label="initial", linewidth=1.5)
-axes2[0, 0].plot(rank, S_final_ord_n.detach().cpu().numpy(), label="final", linewidth=1.5)
-axes2[0, 0].set_yscale("log")
-axes2[0, 0].set_title("Sensitivities ordered by min(initial, final)")
-axes2[0, 0].set_xlabel("parameter rank after ordering")
-axes2[0, 0].set_ylabel("normalized sensitivity mass")
-axes2[0, 0].legend()
+cum_init = torch.cumsum(evals_init_pos, dim=0) / (evals_init_pos.sum() + eps)
+cum_final = torch.cumsum(evals_final_pos, dim=0) / (evals_final_pos.sum() + eps)
 
-# 2. Paired scatter after ordering.
-# Color the first quartile by the ordering key so low-sensitivity parameters stand out.
-low_frac = 0.25
-cutoff = torch.quantile(key, low_frac)
-low_mask = key[perm] <= cutoff
+resid_init = 1.0 - cum_init
+resid_final = 1.0 - cum_final
 
-x_ord = S_init_ord_n.detach().cpu().numpy()
-y_ord = S_final_ord_n.detach().cpu().numpy()
-low_np = low_mask.detach().cpu().numpy()
+# Effective rank diagnostics.
+p_init = evals_init_pos / (evals_init_pos.sum() + eps)
+p_final = evals_final_pos / (evals_final_pos.sum() + eps)
 
-axes2[0, 1].scatter(
-    x_ord[~low_np],
-    y_ord[~low_np],
-    s=10,
-    alpha=0.35,
-    label="other parameters",
-    marker="o",
-)
-axes2[0, 1].scatter(
-    x_ord[low_np],
-    y_ord[low_np],
-    s=18,
-    alpha=0.95,
-    label="persistently low",
-    marker="x",
-)
+eff_rank_init = torch.exp(-(p_init * torch.log(p_init + eps)).sum()).item()
+eff_rank_final = torch.exp(-(p_final * torch.log(p_final + eps)).sum()).item()
 
-lims = [
-    min(x_ord.min(), y_ord.min()),
-    max(x_ord.max(), y_ord.max()),
-]
-axes2[0, 1].plot(lims, lims, linestyle=":", linewidth=1.2, color="k", label="y = x")
-axes2[0, 1].axvline(
-    (S_init / (S_init.sum() + eps)).detach().cpu().quantile(low_frac).item(),
-    linestyle="--",
-    linewidth=1.0,
-)
-axes2[0, 1].axhline(
-    (S_final / (S_final.sum() + eps)).detach().cpu().quantile(low_frac).item(),
-    linestyle="--",
-    linewidth=1.0,
-)
-axes2[0, 1].set_xscale("log")
-axes2[0, 1].set_yscale("log")
-axes2[0, 1].set_title("Initial vs final sensitivity after ordering")
-axes2[0, 1].set_xlabel("initial normalized sensitivity")
-axes2[0, 1].set_ylabel("final normalized sensitivity")
-axes2[0, 1].legend()
+# Top-k loadings for a heatmap.
+k_show = min(13, evecs_final.shape[1])
+loadings_final = evecs_final[perm, :k_show].detach().cpu().numpy()
 
-# 3. Reordered covariance at init.
-im2 = axes2[1, 0].imshow(
-    C_init_ord_n.detach().cpu().numpy(),
-    aspect="auto",
-    cmap="RdBu_r",
-    vmin=-1,
-    vmax=1,
-)
-axes2[1, 0].set_title("Initial covariance reordered by sensitivity")
-axes2[1, 0].set_xlabel("parameter rank")
-axes2[1, 0].set_ylabel("parameter rank")
-plt.colorbar(im2, ax=axes2[1, 0])
+# Pairwise projection coordinates for the top 3 modes.
+# These are parameter coordinates in the dominant eigenspace.
 
-# 4. Reordered covariance after training.
-im3 = axes2[1, 1].imshow(
-    C_final_ord_n.detach().cpu().numpy(),
-    aspect="auto",
-    cmap="RdBu_r",
-    vmin=-1,
-    vmax=1,
-)
-axes2[1, 1].set_title("Final covariance reordered by sensitivity")
-axes2[1, 1].set_xlabel("parameter rank")
-axes2[1, 1].set_ylabel("parameter rank")
-plt.colorbar(im3, ax=axes2[1, 1])
+coords_final = (evecs_final[:, :3] * torch.sqrt(evals_final_pos[:3].to(device).clamp_min(eps))).detach().cpu().numpy()
 
-plt.tight_layout()
-plt.savefig(f"Plots/Ordered_Sensitivity_Diagnostics_{parameter_count(model)}_Parameters.pdf")
-plt.close(fig2)
+sens_color = np.log10((S_final / (S_final.sum() + eps) + eps).detach().cpu().numpy())
 
-
-
-
-
-# ============================================================
-# Additional diagnostics for low-dimensional sensitivity structure
-# ============================================================
-
-# Order parameters by persistent low sensitivity.
-# This makes parameters that are low before AND after training appear together.
-key = torch.min(S_init, S_final)
-perm = torch.argsort(key)
-
-S_init_ord = S_init[perm]
-S_final_ord = S_final[perm]
-C_final_ord = C_final[perm][:, perm]
-
-eps = 1e-30
-S_init_ord_n = S_init_ord / (S_init_ord.sum() + eps)
-S_final_ord_n = S_final_ord / (S_final_ord.sum() + eps)
-
-# Reuse the same covariance normalization idea as in the original figure.
-def normalize_covariance(C):
-    d = torch.diag(C)
-    scale = torch.sqrt(d.clamp_min(eps))
-    return C / (scale[:, None] * scale[None, :] + eps)
-
-C_final_ord_n = normalize_covariance(C_final_ord)
-
-# Eigen-decomposition for the final covariance.
-# eigh returns ascending eigenvalues; reverse to descending.
-evals, evecs = torch.linalg.eigh(C_final_ord_n.cpu())
-evals = evals.flip(0)
-evecs = evecs.flip(1)
-
-# Effective rank from the eigenvalue distribution.
-p = (evals.clamp_min(0.0) + eps)
-p = p / p.sum()
-effective_rank = torch.exp(-(p * torch.log(p + eps)).sum()).item()
-
-# 2D embedding from the top two eigenvectors, scaled by sqrt(eigenvalue).
-# This is a loading-style map in parameter space.
-coords_2d = evecs[:, :2] * torch.sqrt(evals[:2].clamp_min(eps))
-
-# Layer / tensor block summary.
-# This groups parameters by trainable tensor, which is the most robust "blockwise" view.
-param_blocks = []
-offset = 0
-for name, p in model.named_parameters():
-    n = p.numel()
-    param_blocks.append((name, slice(offset, offset + n)))
-    offset += n
-
-block_names = [name for name, _ in param_blocks]
-block_init = torch.tensor([S_init[sl].mean().item() for _, sl in param_blocks], device=S_init.device)
-block_final = torch.tensor([S_final[sl].mean().item() for _, sl in param_blocks], device=S_final.device)
-
-# Low-sensitivity fraction per block, based on the persistent-low threshold.
-low_frac = 0.25
-low_cutoff = torch.quantile(key, low_frac)
-block_low_init = []
-block_low_final = []
-for _, sl in param_blocks:
-    block_low_init.append((S_init[sl] <= low_cutoff).float().mean().item())
-    block_low_final.append((S_final[sl] <= low_cutoff).float().mean().item())
-
-# For the 2D embedding, color by final sensitivity mass fraction.
-S_final_frac = (S_final / (S_final.sum() + eps)).detach().cpu().numpy()
-
+# -----------------------
+# Figure 1: rank / energy
+# -----------------------
 fig2, axes2 = plt.subplots(2, 2, figsize=(18, 13))
 
-# 1) Eigenspectrum
-axes2[0, 0].plot(
-    (eig_init / (eig_init.max() + eps)).detach().cpu().numpy(),
-    label="initial",
-    linewidth=1.5,
-)
-axes2[0, 0].plot(
-    (eig_final / (eig_final.max() + eps)).detach().cpu().numpy(),
-    label="final",
-    linewidth=1.5,
-)
-axes2[0, 0].set_yscale("log")
-axes2[0, 0].set_title(f"Sensitivity covariance eigenspectrum (effective rank ~ {effective_rank:.1f})")
-axes2[0, 0].set_xlabel("eigenvalue index")
-axes2[0, 0].set_ylabel("normalized eigenvalue")
-axes2[0, 0].legend()
+# 1) Cumulative explained variance.
+k = np.arange(1, len(cum_final) + 1)
+axes2[0, 0].plot(k, cum_init.detach().cpu().numpy(), label=f"initial (eff. rank {eff_rank_init:.1f})", linewidth=1.6)
+axes2[0, 0].plot(k, cum_final.detach().cpu().numpy(), label=f"final (eff. rank {eff_rank_final:.1f})", linewidth=1.6)
+axes2[0, 0].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[0, 0].axhline(0.90, linestyle=":", linewidth=1.0, color="gray")
+axes2[0, 0].axhline(0.95, linestyle=":", linewidth=1.0, color="gray")
+axes2[0, 0].set_title("Cumulative explained variance")
+axes2[0, 0].set_xlabel("number of modes k")
+axes2[0, 0].set_ylabel("fraction of variance explained")
+axes2[0, 0].set_ylim(0.0, 1.02)
+axes2[0, 0].legend(loc="lower right")
 
-# 2) Reordered covariance heatmap
-im2 = axes2[0, 1].imshow(
-    C_final_ord_n.detach().cpu().numpy(),
+# 2) Scree plot with cumulative curve on a second axis.
+ax = axes2[0, 1]
+ax2 = ax.twinx()
+
+k = np.arange(1, len(evals_final_pos) + 1)
+l1 = ax.plot(k, (evals_init_pos / (evals_init_pos.max() + eps)).detach().cpu().numpy(),
+             label="initial", linewidth=1.4)
+l2 = ax.plot(k, (evals_final_pos / (evals_final_pos.max() + eps)).detach().cpu().numpy(),
+             label="final", linewidth=1.4)
+l3 = ax2.plot(k, cum_final.detach().cpu().numpy(),
+              label="final cumulative", linestyle="--", linewidth=1.4, color="k")
+
+ax.set_yscale("log")
+ax.set_title("Scree plot and cumulative variance")
+ax.set_xlabel("eigenvalue index")
+ax.set_ylabel("normalized eigenvalue")
+ax2.set_ylabel("cumulative explained variance")
+ax2.set_ylim(0.0, 1.02)
+
+lines = l1 + l2 + l3
+labels = [line.get_label() for line in lines]
+ax.legend(lines, labels, loc="lower left")
+
+# 3) Heatmap of top 13 eigenvector loadings, ordered by persistent low sensitivity.
+im2 = axes2[1, 0].imshow(
+    np.abs(loadings_final),
     aspect="auto",
     cmap="RdBu_r",
-    vmin=-1,
-    vmax=1,
+    # vmin=-np.max(np.abs(loadings_final)),
+    # vmax=np.max(np.abs(loadings_final)),
 )
-axes2[0, 1].set_title("Final covariance reordered by persistent low sensitivity")
-axes2[0, 1].set_xlabel("parameter rank")
-axes2[0, 1].set_ylabel("parameter rank")
-plt.colorbar(im2, ax=axes2[0, 1])
+axes2[1, 0].set_title("Top eigenvector loadings\n(parameters ordered by persistent low sensitivity)")
+axes2[1, 0].set_xlabel("mode index")
+axes2[1, 0].set_ylabel("parameter rank")
+axes2[1, 0].set_xticks(np.arange(k_show))
+axes2[1, 0].set_xticklabels(np.arange(1, k_show + 1))
+plt.colorbar(im2, ax=axes2[1, 0], label="loading")
 
-# 3) 2D PCA/SVD-style loading map of parameters
-sc = axes2[1, 0].scatter(
-    coords_2d[:, 0].detach().cpu().numpy(),
-    coords_2d[:, 1].detach().cpu().numpy(),
-    c=np.log10(S_final_frac + 1e-30),
-    s=10,
-    alpha=0.7,
-    cmap="viridis",
-)
-axes2[1, 0].set_title("2D parameter loading map from final covariance")
-axes2[1, 0].set_xlabel("PC1 loading")
-axes2[1, 0].set_ylabel("PC2 loading")
-plt.colorbar(sc, ax=axes2[1, 0], label="log10(final sensitivity mass fraction)")
-
-# 4) Blockwise analysis by parameter tensor / layer
-x = np.arange(len(block_names))
-w = 0.38
-axes2[1, 1].bar(x - w / 2, block_init.detach().cpu().numpy(), width=w, label="initial")
-axes2[1, 1].bar(x + w / 2, block_final.detach().cpu().numpy(), width=w, label="final")
-axes2[1, 1].set_title("Mean sensitivity mass by parameter block")
-axes2[1, 1].set_xlabel("parameter block")
-axes2[1, 1].set_ylabel("mean normalized sensitivity")
-axes2[1, 1].set_xticks(x)
-axes2[1, 1].set_xticklabels(block_names, rotation=45, ha="right")
-axes2[1, 1].legend()
+# 4) Residual energy after truncation.
+axes2[1, 1].plot(k, resid_init.detach().cpu().numpy(), label="initial", linewidth=1.6)
+axes2[1, 1].plot(k, resid_final.detach().cpu().numpy(), label="final", linewidth=1.6)
+axes2[1, 1].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[1, 1].set_title("Residual energy after rank-k truncation")
+axes2[1, 1].set_xlabel("number of retained modes k")
+axes2[1, 1].set_ylabel("residual fraction")
+axes2[1, 1].set_ylim(0.0, 1.02)
+axes2[1, 1].legend(loc="upper right")
 
 plt.tight_layout()
-plt.savefig(f"Plots/Additional_Sensitivity_Structure_{parameter_count(model)}_Parameters.pdf")
+plt.savefig(f"Plots/Low_Rank_Structure_Summary_{parameter_count(model)}_Parameters.pdf")
 plt.close(fig2)
-
 
 
 

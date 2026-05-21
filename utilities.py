@@ -240,3 +240,9 @@ def apply_masks_to_weights_and_state(model, optimizer, masks):
             state["exp_avg"].mul_(mask)
         if "exp_avg_sq" in state:
             state["exp_avg_sq"].mul_(mask)
+
+def effective_rank(eigs, eps=1e-30):
+    x = eigs.detach().float().cpu().numpy()
+    x = np.clip(x, eps, None)
+    p = x / x.sum()
+    return float(np.exp(-(p * np.log(p)).sum()))

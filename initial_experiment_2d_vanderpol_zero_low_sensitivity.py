@@ -30,8 +30,8 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 2 # 4
-    hidden_width: int = 48 # 64
+    n_hidden: int = 4
+    hidden_width: int = 64
     lr: float = 1e-3
     epochs: int = 100000
     checkpoint_interval: int = epochs // 25
@@ -49,6 +49,7 @@ class Config:
     noise_multiplier: float = 5e-2
     plot_grid_size: int = 45
 
+    l1_lambda: float = 1e-3
 
 cfg = Config()
 
@@ -225,7 +226,17 @@ for epoch in range(cfg.epochs):
         apply_masks_to_weights_and_state(model, optimizer, trainable_masks)
 
     pred = model(x_train)
-    loss = criterion(pred, y_train)
+
+    l1_penalty = sum(
+        p.abs().sum()
+        for name, p in model.named_parameters()
+        if p.requires_grad and "bias" not in name
+    )
+
+    task_loss = criterion(pred, y_train)
+
+    loss = task_loss + cfg.l1_lambda * l1_penalty
+
     loss.backward()
 
     if trainable_masks is not None:
@@ -392,15 +403,17 @@ axes[1, 1].set_ylabel("parameter index")
 plt.colorbar(im1, ax=axes[1, 1])
 
 # 6. Eigenspectrum
-axes[1, 2].plot((eig_init/(eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
+eig_final_erank = effective_rank(eig_final)
+
+axes[1, 2].plot((eig_init / (eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
 if eig_ref is not None:
-    axes[1, 2].plot((eig_ref/(eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
-axes[1, 2].plot((eig_final/(eig_final.max()+ 1e-30)).detach().cpu().numpy(), label="final")
+    axes[1, 2].plot((eig_ref / (eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
+axes[1, 2].plot((eig_final / (eig_final.max() + 1e-30)).detach().cpu().numpy(), label="final")
 axes[1, 2].set_yscale("log")
-axes[1, 2].set_title("Sensitivity covariance eigenspectrum")
+axes[1, 2].set_title(f"Sensitivity covariance eigenspectrum (effective rank = {eig_final_erank:.2f})")
 axes[1, 2].legend()
-axes[1, 2].set_xlabel('Number')
-axes[1, 2].set_ylabel('Eigenvalue')
+axes[1, 2].set_xlabel("Number")
+axes[1, 2].set_ylabel("Eigenvalue")
 
 # 7. Loss curves
 axes[2, 0].plot(history["epoch"], history["train_loss"], label="train")
@@ -513,6 +526,145 @@ axes[2, 2].legend()
 plt.tight_layout()
 plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_zero_low_sensitivity_{parameter_count(model)}_Parameters.pdf")
 plt.close(fig)
+
+
+
+
+
+
+
+
+
+# ============================================================
+# Additional low-rank structure diagnostics
+# ============================================================
+
+eps = 1e-30
+
+# Reuse the same idea: order parameters by persistent low sensitivity.
+key = torch.min(S_init, S_final)
+perm = torch.argsort(key)
+
+# Reorder covariance matrices for visualization.
+C_init_ord_n = C_init_n[perm][:, perm]
+C_final_ord_n = C_final_n[perm][:, perm]
+
+# Eigen-decompositions of normalized covariance matrices.
+# eigh returns ascending eigenvalues; flip to descending.
+evals_init, evecs_init = torch.linalg.eigh(C_init_n.cpu())
+evals_final, evecs_final = torch.linalg.eigh(C_final_n.cpu())
+
+evals_init = evals_init.flip(0)
+evecs_init = evecs_init.flip(1).to(device)
+
+evals_final = evals_final.flip(0)
+evecs_final = evecs_final.flip(1).to(device)
+
+# Numerical cleanup for cumulative variance / residual curves.
+evals_init_pos = evals_init.clamp_min(0.0)
+evals_final_pos = evals_final.clamp_min(0.0)
+
+cum_init = torch.cumsum(evals_init_pos, dim=0) / (evals_init_pos.sum() + eps)
+cum_final = torch.cumsum(evals_final_pos, dim=0) / (evals_final_pos.sum() + eps)
+
+resid_init = 1.0 - cum_init
+resid_final = 1.0 - cum_final
+
+# Effective rank diagnostics.
+p_init = evals_init_pos / (evals_init_pos.sum() + eps)
+p_final = evals_final_pos / (evals_final_pos.sum() + eps)
+
+eff_rank_init = torch.exp(-(p_init * torch.log(p_init + eps)).sum()).item()
+eff_rank_final = torch.exp(-(p_final * torch.log(p_final + eps)).sum()).item()
+
+# Top-k loadings for a heatmap.
+k_show = min(13, evecs_final.shape[1])
+loadings_final = evecs_final[perm, :k_show].detach().cpu().numpy()
+
+# Pairwise projection coordinates for the top 3 modes.
+# These are parameter coordinates in the dominant eigenspace.
+
+coords_final = (evecs_final[:, :3] * torch.sqrt(evals_final_pos[:3].to(device).clamp_min(eps))).detach().cpu().numpy()
+
+sens_color = np.log10((S_final / (S_final.sum() + eps) + eps).detach().cpu().numpy())
+
+# -----------------------
+# Figure 1: rank / energy
+# -----------------------
+fig2, axes2 = plt.subplots(2, 2, figsize=(18, 13))
+
+# 1) Cumulative explained variance.
+k = np.arange(1, len(cum_final) + 1)
+axes2[0, 0].plot(k, cum_init.detach().cpu().numpy(), label=f"initial (eff. rank {eff_rank_init:.1f})", linewidth=1.6)
+axes2[0, 0].plot(k, cum_final.detach().cpu().numpy(), label=f"final (eff. rank {eff_rank_final:.1f})", linewidth=1.6)
+axes2[0, 0].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[0, 0].axhline(0.90, linestyle=":", linewidth=1.0, color="gray")
+axes2[0, 0].axhline(0.95, linestyle=":", linewidth=1.0, color="gray")
+axes2[0, 0].set_title("Cumulative explained variance")
+axes2[0, 0].set_xlabel("number of modes k")
+axes2[0, 0].set_ylabel("fraction of variance explained")
+axes2[0, 0].set_ylim(0.0, 1.02)
+axes2[0, 0].legend(loc="lower right")
+
+# 2) Scree plot with cumulative curve on a second axis.
+ax = axes2[0, 1]
+ax2 = ax.twinx()
+
+k = np.arange(1, len(evals_final_pos) + 1)
+l1 = ax.plot(k, (evals_init_pos / (evals_init_pos.max() + eps)).detach().cpu().numpy(),
+             label="initial", linewidth=1.4)
+l2 = ax.plot(k, (evals_final_pos / (evals_final_pos.max() + eps)).detach().cpu().numpy(),
+             label="final", linewidth=1.4)
+l3 = ax2.plot(k, cum_final.detach().cpu().numpy(),
+              label="final cumulative", linestyle="--", linewidth=1.4, color="k")
+
+ax.set_yscale("log")
+ax.set_title("Scree plot and cumulative variance")
+ax.set_xlabel("eigenvalue index")
+ax.set_ylabel("normalized eigenvalue")
+ax2.set_ylabel("cumulative explained variance")
+ax2.set_ylim(0.0, 1.02)
+
+lines = l1 + l2 + l3
+labels = [line.get_label() for line in lines]
+ax.legend(lines, labels, loc="lower left")
+
+# 3) Heatmap of top 13 eigenvector loadings, ordered by persistent low sensitivity.
+im2 = axes2[1, 0].imshow(
+    np.abs(loadings_final),
+    aspect="auto",
+    cmap="RdBu_r",
+    # vmin=-np.max(np.abs(loadings_final)),
+    # vmax=np.max(np.abs(loadings_final)),
+)
+axes2[1, 0].set_title("Top eigenvector loadings\n(parameters ordered by persistent low sensitivity)")
+axes2[1, 0].set_xlabel("mode index")
+axes2[1, 0].set_ylabel("parameter rank")
+axes2[1, 0].set_xticks(np.arange(k_show))
+axes2[1, 0].set_xticklabels(np.arange(1, k_show + 1))
+plt.colorbar(im2, ax=axes2[1, 0], label="loading")
+
+# 4) Residual energy after truncation.
+axes2[1, 1].plot(k, resid_init.detach().cpu().numpy(), label="initial", linewidth=1.6)
+axes2[1, 1].plot(k, resid_final.detach().cpu().numpy(), label="final", linewidth=1.6)
+axes2[1, 1].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[1, 1].set_title("Residual energy after rank-k truncation")
+axes2[1, 1].set_xlabel("number of retained modes k")
+axes2[1, 1].set_ylabel("residual fraction")
+axes2[1, 1].set_ylim(0.0, 1.02)
+axes2[1, 1].legend(loc="upper right")
+
+plt.tight_layout()
+plt.savefig(f"Plots/Low_Rank_Structure_Summary_{parameter_count(model)}_Parameters.pdf")
+plt.close(fig2)
+
+
+
+
+
+
+
+
 
 
 # ============================================================
