@@ -167,17 +167,43 @@ def spearman_corr(a: torch.Tensor, b: torch.Tensor) -> float:
     rb_np = rb.cpu().numpy()
     return float(np.corrcoef(ra_np, rb_np)[0, 1])
 
-def build_trainable_masks(model, scores, frac=0.1):
+def build_trainable_masks(model, scores, frac=0.1, reduction="sum"):
     """
     Build boolean masks for each parameter tensor.
+
     True  -> keep active
     False -> zero after compare_epoch
 
-    The masks are defined globally across all parameters by top-k functional
-    sensitivity at the compare snapshot.
+    For the 2D Van der Pol case, `scores` may contain one block per output
+    component, so we first collapse it to one score per scalar parameter.
     """
-    keep_idx = topk_indices(scores, frac=frac)
-    global_mask = torch.zeros_like(scores, dtype=torch.bool)
+    scores = scores.detach().flatten()
+
+    param_count = sum(p.numel() for p in model.parameters())
+
+    # Case 1: already one score per parameter
+    if scores.numel() == param_count:
+        param_scores = scores
+
+    # Case 2: vector-output sensitivity, e.g. 2D Van der Pol
+    elif scores.numel() % param_count == 0:
+        out_dim = scores.numel() // param_count
+        scores = scores.view(out_dim, param_count)
+
+        if reduction == "sum":
+            param_scores = scores.sum(dim=0)
+        elif reduction == "mean":
+            param_scores = scores.mean(dim=0)
+        else:
+            raise ValueError("reduction must be 'sum' or 'mean'")
+
+    else:
+        raise RuntimeError(
+            f"Cannot align scores of length {scores.numel()} with parameter count {param_count}."
+        )
+
+    keep_idx = topk_indices(param_scores, frac=frac)
+    global_mask = torch.zeros_like(param_scores, dtype=torch.bool)
     global_mask[keep_idx] = True
 
     masks = []
@@ -187,9 +213,9 @@ def build_trainable_masks(model, scores, frac=0.1):
         masks.append(global_mask[offset: offset + n].view_as(p).detach().clone())
         offset += n
 
-    if offset != scores.numel():
+    if offset != param_count:
         raise RuntimeError(
-            f"Mask construction failed: consumed {offset} scores, expected {scores.numel()}."
+            f"Mask construction failed: consumed {offset} parameters, expected {param_count}."
         )
 
     return masks
