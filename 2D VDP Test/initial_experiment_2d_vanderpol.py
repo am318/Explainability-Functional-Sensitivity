@@ -30,13 +30,12 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 1
-    hidden_width: int = 128
+    n_hidden: int = 2
+    hidden_width: int = 64
     lr: float = 1e-2
     epochs: int = 100000
     checkpoint_interval: int = epochs // 25
     topk_frac: float = 0.10
-    nonzero_fraction: float = 0.6
     compare_epoch: int = epochs // 25
 
     # Van der Pol oscillator parameter and phase-space domain.
@@ -50,6 +49,7 @@ class Config:
     plot_grid_size: int = 45
 
     l1_lambda: float = 1e-3
+
 
 cfg = Config()
 
@@ -225,8 +225,6 @@ S_ref = None
 C_ref = None
 ref_topk_idx = None
 ref_epoch = None
-trainable_masks = None
-
 
 # ============================================================
 # Training
@@ -235,14 +233,14 @@ trainable_masks = None
 print("\nTraining")
 print("========")
 
-for epoch in range(cfg.epochs):
+for epoch in range(cfg.epochs + 1):
     model.train()
-    optimizer.zero_grad()
-
-    if trainable_masks is not None:
-        apply_masks_to_state(model, optimizer, trainable_masks)
+    optimizer.zero_grad(set_to_none=True)
 
     pred = model(x_train)
+    task_loss = criterion(pred, y_train)
+
+    # task_loss = physics_informed_loss(pred, x_train, cfg.mu)
 
     l1_penalty = sum(
         p.abs().sum()
@@ -250,45 +248,21 @@ for epoch in range(cfg.epochs):
         if p.requires_grad and "bias" not in name
     )
 
-    task_loss = criterion(pred, y_train)
-
-    # task_loss = physics_informed_loss(pred, x_train, cfg.mu)
-
     loss = task_loss # + cfg.l1_lambda * l1_penalty
 
+    #     loss = criterion(pred, y_train)
+
     loss.backward()
-
-    if trainable_masks is not None:
-        apply_masks_to_state(model, optimizer, trainable_masks)
-
     optimizer.step()
-
-    if trainable_masks is not None:
-        apply_masks_to_state(model, optimizer, trainable_masks)
-
-    if (epoch == cfg.compare_epoch) and (S_ref is None):
-        model.eval()
-        J_ref = compute_parameter_jacobian(model, x_train)
-        S_ref = sensitivity_scores(J_ref).detach().clone()
-        C_ref = compute_covariance(J_ref).detach().clone()
-        ref_topk_idx = topk_indices(S_ref, cfg.topk_frac)
-        ref_epoch = epoch
-        trainable_masks = build_trainable_masks(model, S_ref, cfg.nonzero_fraction)
-        apply_masks_to_state(model, optimizer, trainable_masks)
-        zeroed_fraction_exact = 1.0 - (
-            sum(m.sum().item() for m in trainable_masks) / sum(m.numel() for m in trainable_masks)
-        )
-        print(f"Captured reference snapshot at epoch={ref_epoch}")
-        print(f"Freezing low-sensitivity weights; zeroed fraction = {zeroed_fraction_exact:.3f}")
 
     if epoch % cfg.checkpoint_interval == 0:
         model.eval()
 
         with torch.no_grad():
-            train_loss = criterion(model(x_train), y_train).item()
-            test_loss = criterion(model(x_test), y_test).item()
+            train_loss = criterion(model(x_train), y_train_clean).item()
+            test_loss = criterion(model(x_test), y_test_clean).item()
 
-        J = compute_parameter_jacobian(model, x_train)
+        J = compute_parameter_jacobian(model, x_sens)
         S_curr = sensitivity_scores(J)
 
         rho_init_curr = spearman_corr(S_init, S_curr)
@@ -296,14 +270,17 @@ for epoch in range(cfg.epochs):
 
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
-        frozen_fraction = np.nan
+
+        if (S_ref is None) and (epoch >= cfg.compare_epoch):
+            S_ref = S_curr.detach().clone()
+            C_ref = compute_covariance(J).detach().clone()
+            ref_topk_idx = topk_indices(S_ref, cfg.topk_frac)
+            ref_epoch = epoch
+            print(f"Captured reference snapshot at epoch={ref_epoch}")
 
         if S_ref is not None:
             rho_ref_curr = spearman_corr(S_ref, S_curr)
             ref_topk_mass = mass_on_indices(S_curr, ref_topk_idx)
-            frozen_fraction = 1.0 - (
-                sum(m.sum().item() for m in trainable_masks) / sum(m.numel() for m in trainable_masks)
-            )
 
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
@@ -424,10 +401,18 @@ plt.colorbar(im1, ax=axes[1, 1])
 # 6. Eigenspectrum
 eig_final_erank = effective_rank(eig_final)
 
-axes[1, 2].plot((eig_init / (eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
+# axes[1, 2].plot((eig_init / (eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
+# if eig_ref is not None:
+#     axes[1, 2].plot((eig_ref / (eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
+# axes[1, 2].plot((eig_final / (eig_final.max() + 1e-30)).detach().cpu().numpy(), label="final")
+
+axes[1, 2].plot(eig_init.detach().cpu().numpy(), label="initial")
 if eig_ref is not None:
-    axes[1, 2].plot((eig_ref / (eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
-axes[1, 2].plot((eig_final / (eig_final.max() + 1e-30)).detach().cpu().numpy(), label="final")
+    axes[1, 2].plot(eig_ref.detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
+axes[1, 2].plot(eig_final.detach().cpu().numpy(), label="final")
+
+
+
 axes[1, 2].set_yscale("log")
 axes[1, 2].set_title(f"Sensitivity covariance eigenspectrum (effective rank = {eig_final_erank:.2f})")
 axes[1, 2].legend()
@@ -465,12 +450,11 @@ ax.legend(lines, labels, loc="best")
 
 # 9. Early-vs-final normalised sensitivity scores
 eps = 1e-30
-# low_frac = 0.25
-low_frac = 1-cfg.nonzero_fraction
+low_frac = 0.25
 
-# S_early = S_ref if S_ref is not None else S_init
+S_early = S_ref if S_ref is not None else S_init
 
-S_early = S_init
+# S_early = S_init
 
 S_early_norm = S_early / (S_early.sum() + eps)
 S_final_norm = S_final / (S_final.sum() + eps)
@@ -543,8 +527,180 @@ axes[2, 2].set_ylabel("final sensitivity mass fraction")
 axes[2, 2].legend()
 
 plt.tight_layout()
-plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 plt.close(fig)
+
+
+
+
+
+
+
+
+# ============================================================
+# Separate sensitivity distribution figure
+# ============================================================
+
+eps = 1e-30
+
+# Normalize so the two distributions are comparable on the same scale.
+# S_init_dist = (S_init / (S_init.sum() + eps)).detach().cpu().numpy()
+S_init_dist = S_init.detach().cpu().numpy()
+# S_final_dist = (S_final / (S_final.sum() + eps)).detach().cpu().numpy()
+S_final_dist = S_final.detach().cpu().numpy()
+
+# Use common log-spaced bins over the positive support.
+positive_vals = np.concatenate([
+    S_init_dist[S_init_dist > 0],
+    S_final_dist[S_final_dist > 0],
+])
+positive_vals = positive_vals[np.isfinite(positive_vals)]
+
+if positive_vals.size > 0:
+    bins = np.logspace(
+        np.log10(positive_vals.min()),
+        np.log10(positive_vals.max()),
+        50,
+    )
+else:
+    bins = 50
+
+fig3, ax3 = plt.subplots(figsize=(10, 6))
+
+ax3.hist(
+    S_init_dist,
+    bins=bins,
+    density=True,
+    alpha=0.55,
+    label="initial",
+)
+ax3.hist(
+    S_final_dist,
+    bins=bins,
+    density=True,
+    alpha=0.55,
+    label="final",
+)
+
+ax3.set_xscale("log")
+ax3.set_yscale("log")
+ax3.set_title("Distribution of normalized sensitivities")
+ax3.set_xlabel("sensitivity mass fraction")
+ax3.set_ylabel("density")
+ax3.legend(loc="best")
+
+plt.tight_layout()
+plt.savefig(
+    f"Plots/Sensitivity_Distribution_Initial_vs_Final_"
+    f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf"
+)
+plt.close(fig3)
+
+
+
+
+
+
+
+
+# ============================================================
+# Separate plot: unnormalised sensitivity vs parameter magnitude
+# ============================================================
+
+def flatten_param_magnitudes(mod: nn.Module):
+    """Flatten all trainable parameters into one 1D vector of absolute values."""
+    chunks = []
+    for p in mod.parameters():
+        if p.requires_grad:
+            chunks.append(p.detach().abs().reshape(-1))
+    return torch.cat(chunks, dim=0)
+
+
+def reduce_sensitivity_to_parameter_level(mod: nn.Module, sens: torch.Tensor):
+    """
+    Reduce sensitivities to one value per scalar parameter.
+
+    This handles the common case where sensitivity_scores(J) returns
+    one sensitivity per parameter per output dimension, e.g. length = 2 * n_params
+    for a 2D output field.
+    """
+    sens_flat = sens.detach().reshape(-1)
+
+    param_count = sum(p.numel() for p in mod.parameters() if p.requires_grad)
+
+    # Already aligned.
+    if sens_flat.numel() == param_count:
+        return sens_flat
+
+    # Common case: output_dim x n_params or n_params x output_dim flattened.
+    if sens_flat.numel() % param_count == 0:
+        out_dim = sens_flat.numel() // param_count
+        sens_reduced = sens_flat.view(out_dim, param_count).norm(dim=0)
+        return sens_reduced
+
+    raise ValueError(
+        f"Cannot reduce sensitivity vector of length {sens_flat.numel()} "
+        f"to parameter count {param_count}."
+    )
+
+
+param_mag_init = flatten_param_magnitudes(initial_model)
+param_mag_final = flatten_param_magnitudes(model)
+
+sens_init_red = reduce_sensitivity_to_parameter_level(initial_model, S_init)
+sens_final_red = reduce_sensitivity_to_parameter_level(model, S_final)
+
+# Safety clamp for log axes.
+eps = 1e-30
+x_init = param_mag_init.clamp_min(eps).cpu().numpy()
+y_init = sens_init_red.clamp_min(eps).cpu().numpy()
+
+x_final = param_mag_final.clamp_min(eps).cpu().numpy()
+y_final = sens_final_red.clamp_min(eps).cpu().numpy()
+
+fig4, ax4 = plt.subplots(figsize=(8.5, 6.5))
+
+ax4.scatter(
+    x_init,
+    y_init,
+    s=8,
+    alpha=0.35,
+    label="initial",
+    marker="o",
+)
+
+ax4.scatter(
+    x_final,
+    y_final,
+    s=8,
+    alpha=0.35,
+    label="final",
+    marker="x",
+)
+
+ax4.set_xscale("log")
+ax4.set_yscale("log")
+ax4.set_title("Unnormalised sensitivity vs parameter magnitude")
+ax4.set_xlabel(r"$|\theta_i|$")
+ax4.set_ylabel(r"$s_i$")
+ax4.legend(loc="best")
+
+plt.tight_layout()
+plt.savefig(
+    f"Plots/Sensitivity_vs_Parameter_Magnitude_"
+    f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf"
+)
+plt.close(fig4)
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -673,16 +829,8 @@ axes2[1, 1].set_ylim(0.0, 1.02)
 axes2[1, 1].legend(loc="upper right")
 
 plt.tight_layout()
-plt.savefig(f"Plots/Low_Rank_Structure_Summary_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+plt.savefig(f"Plots/Low_Rank_Structure_Summary_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 plt.close(fig2)
-
-
-
-
-
-
-
-
 
 
 # ============================================================
@@ -713,7 +861,7 @@ summary = {
     "largest_final_eigenvalue": float(eig_final[0].item()),
 }
 
-with open(f"Plots/final_summary_2d_vanderpol_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
+with open(f"Plots/final_summary_2d_vanderpol_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print("\nFinal summary")

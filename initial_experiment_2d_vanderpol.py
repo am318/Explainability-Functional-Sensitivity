@@ -30,13 +30,13 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 1
-    hidden_width: int = 256
+    n_hidden: int = 2
+    hidden_width: int = 16
     lr: float = 1e-2
-    epochs: int = 100000
-    checkpoint_interval: int = epochs // 25
+    epochs: int = 10000 # 100000
+    checkpoint_interval: int = epochs // 10 # INCREASE
     topk_frac: float = 0.10
-    compare_epoch: int = epochs // 25
+    compare_epoch: int = epochs // 10 #INCREASE
 
     # Van der Pol oscillator parameter and phase-space domain.
     mu: float = 3.0
@@ -219,6 +219,7 @@ history = {
     "init_topk_mass": [],
     "spearman_ref_current": [],
     "ref_topk_mass": [],
+    "mean_abs_sensitivity": [],
 }
 
 S_ref = None
@@ -238,9 +239,9 @@ for epoch in range(cfg.epochs + 1):
     optimizer.zero_grad(set_to_none=True)
 
     pred = model(x_train)
-    # task_loss = criterion(pred, y_train)
+    task_loss = criterion(pred, y_train)
 
-    task_loss = physics_informed_loss(pred, x_train, cfg.mu)
+    # task_loss = physics_informed_loss(pred, x_train, cfg.mu)
 
     l1_penalty = sum(
         p.abs().sum()
@@ -248,7 +249,7 @@ for epoch in range(cfg.epochs + 1):
         if p.requires_grad and "bias" not in name
     )
 
-    loss = task_loss + cfg.l1_lambda * l1_penalty
+    loss = task_loss # + cfg.l1_lambda * l1_penalty
 
     #     loss = criterion(pred, y_train)
 
@@ -267,6 +268,9 @@ for epoch in range(cfg.epochs + 1):
 
         rho_init_curr = spearman_corr(S_init, S_curr)
         init_topk_mass = mass_on_indices(S_curr, init_topk_idx)
+
+        J = compute_parameter_jacobian(model, x_sens)
+        mean_abs_sens = reduce_jacobian_to_parameter_vector(J, mode="abs").cpu().numpy()
 
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
@@ -289,6 +293,7 @@ for epoch in range(cfg.epochs + 1):
         history["init_topk_mass"].append(init_topk_mass)
         history["spearman_ref_current"].append(rho_ref_curr)
         history["ref_topk_mass"].append(ref_topk_mass)
+        history["mean_abs_sensitivity"].append(mean_abs_sens)
 
         print(
             f"epoch={epoch:6d} | "
@@ -320,6 +325,30 @@ eig_ref = eigvals_from_covariance(C_ref) if S_ref is not None else None
 # Plotting
 # ============================================================
 
+# Publication-oriented plotting defaults.
+plt.rcParams.update({
+    "font.family": "DejaVu Sans",
+    "font.size": 11,
+    "axes.titlesize": 12,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "legend.fontsize": 9,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.8,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.03,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
+
+# Conservative, publication-oriented accent palette for non-colormap plots.
+ACCENT_BLUE = "#4C72B0"
+ACCENT_TEAL = "#55A868"
+ACCENT_ORANGE = "#C44E52"
+ACCENT_PURPLE = "#8172B3"
+ACCENT_GRAY = "#6C757D"
+
 grid_x = torch.linspace(cfg.x_min, cfg.x_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
 grid_v = torch.linspace(cfg.v_min, cfg.v_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
 X, V = torch.meshgrid(grid_x, grid_v, indexing="xy")
@@ -336,321 +365,287 @@ true_np = true_field.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot
 pred_np = pred_field.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot_grid_size, 2)
 err_np = field_error.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot_grid_size)
 
-fig, axes = plt.subplots(3, 3, figsize=(20, 16))
+skip = max(1, cfg.plot_grid_size // 20)
+
+# Precompute magnitudes and use one shared normalization for both plots
+true_mag = np.sqrt(true_np[..., 0]**2 + true_np[..., 1]**2)
+pred_mag = np.sqrt(pred_np[..., 0]**2 + pred_np[..., 1]**2)
+
+vmax = max(true_mag.max(), pred_mag.max())
+norm = plt.Normalize(vmin=0.0, vmax=vmax)
+cmap = "cividis"
 
 # 1. True vector field
-skip = max(1, cfg.plot_grid_size // 20)
-axes[0, 0].quiver(
+fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
+q = ax.quiver(
     X_np[::skip, ::skip], V_np[::skip, ::skip],
     true_np[::skip, ::skip, 0], true_np[::skip, ::skip, 1],
-    angles="xy"
+    true_mag[::skip, ::skip],
+    angles="xy",
+    scale_units="xy",
+    scale=22.0,          # larger = shorter arrows
+    width=0.0022,
+    headwidth=3.0,
+    headlength=4.0,
+    headaxislength=3.5,
+    cmap=cmap,
+    norm=norm,
+    alpha=0.95,
 )
-axes[0, 0].set_title("True Van der Pol vector field")
-axes[0, 0].set_xlabel("x")
-axes[0, 0].set_ylabel("v")
+cbar = fig.colorbar(q, ax=ax, pad=0.02)
+cbar.set_label(r"$\|f(x,v)\|$")
+ax.set_title("True Van der Pol vector field")
+ax.set_xlabel("x")
+ax.set_ylabel("v")
+prettify_axes(ax)
+save_pub_figure(fig, f"Plots/True_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 2. Learned vector field
-axes[0, 1].quiver(
+fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
+q = ax.quiver(
     X_np[::skip, ::skip], V_np[::skip, ::skip],
     pred_np[::skip, ::skip, 0], pred_np[::skip, ::skip, 1],
-    angles="xy"
+    pred_mag[::skip, ::skip],
+    angles="xy",
+    scale_units="xy",
+    scale=22.0,
+    width=0.0022,
+    headwidth=3.0,
+    headlength=4.0,
+    headaxislength=3.5,
+    cmap=cmap,
+    norm=norm,
+    alpha=0.95,
 )
-axes[0, 1].set_title("Learned vector field")
-axes[0, 1].set_xlabel("x")
-axes[0, 1].set_ylabel("v")
+cbar = fig.colorbar(q, ax=ax, pad=0.02)
+cbar.set_label(r"$\|f_\theta(x,v)\|$")
+ax.set_title("Learned vector field")
+ax.set_xlabel("x")
+ax.set_ylabel("v")
+prettify_axes(ax)
+save_pub_figure(fig, f"Plots/Learned_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 3. Error heatmap
-im_err = axes[0, 2].imshow(
+fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
+im_err = ax.imshow(
     err_np,
     extent=[cfg.x_min, cfg.x_max, cfg.v_min, cfg.v_max],
     origin="lower",
     aspect="auto",
+    cmap="magma",
 )
-axes[0, 2].set_title("Vector-field error norm")
-axes[0, 2].set_xlabel("x")
-axes[0, 2].set_ylabel("v")
-plt.colorbar(im_err, ax=axes[0, 2])
-
-# 4. Sensitivity covariance at init
-eps = 1e-30
-
-def normalize_covariance(C):
-    d = torch.diag(C)
-    scale = torch.sqrt(d.clamp_min(eps))
-    return C / (scale[:, None] * scale[None, :] + eps)
-
-C_init_n = normalize_covariance(C_init)
-C_final_n = normalize_covariance(C_final)
-
-im0 = axes[1, 0].imshow(C_init_n.detach().cpu().numpy(),
-                        aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1)
-
-axes[1, 0].set_title("Sensitivity covariance at init")
-axes[1, 0].set_xlabel("parameter index")
-axes[1, 0].set_ylabel("parameter index")
-plt.colorbar(im0, ax=axes[1, 0])
-
-# 5. Sensitivity covariance difference after training
-im1 = axes[1, 1].imshow(np.abs((C_final_n - C_init_n).detach().cpu().numpy()),
-                        aspect="auto", cmap="magma")
-axes[1, 1].set_title("Sensitivity covariance difference after training")
-axes[1, 1].set_xlabel("parameter index")
-axes[1, 1].set_ylabel("parameter index")
-plt.colorbar(im1, ax=axes[1, 1])
+ax.set_title("Vector-field error norm")
+ax.set_xlabel("x")
+ax.set_ylabel("v")
+prettify_axes(ax)
+cbar = fig.colorbar(im_err, ax=ax, pad=0.02, fraction=0.046)
+cbar.ax.tick_params(direction="in", length=4, width=0.7)
+cbar.outline.set_linewidth(0.8)
+save_pub_figure(fig, f"Plots/Vector_Field_Error_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 6. Eigenspectrum
 eig_final_erank = effective_rank(eig_final)
 
-axes[1, 2].plot((eig_init / (eig_init.max() + 1e-30)).detach().cpu().numpy(), label="initial")
+fig, ax = plt.subplots(figsize=(7.4, 6.0), constrained_layout=False)
+ax.plot(eig_init.detach().cpu().numpy(), label="initial", color=ACCENT_BLUE)
 if eig_ref is not None:
-    axes[1, 2].plot((eig_ref / (eig_ref.max() + 1e-30)).detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}")
-axes[1, 2].plot((eig_final / (eig_final.max() + 1e-30)).detach().cpu().numpy(), label="final")
-axes[1, 2].set_yscale("log")
-axes[1, 2].set_title(f"Sensitivity covariance eigenspectrum (effective rank = {eig_final_erank:.2f})")
-axes[1, 2].legend()
-axes[1, 2].set_xlabel("Number")
-axes[1, 2].set_ylabel("Eigenvalue")
+    ax.plot(eig_ref.detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}", color=ACCENT_PURPLE, linestyle="--")
+ax.plot(eig_final.detach().cpu().numpy(), label="final", color=ACCENT_ORANGE)
+ax.set_yscale("log")
+ax.set_title(
+    f"Sensitivity covariance eigenspectrum "
+    f"(effective rank = {eig_final_erank:.2f})"
+)
+ax.set_xlabel("Parameter  Index")
+ax.set_ylabel("Eigenvalue")
+prettify_axes(ax)
+ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+beautify_legend(ax, loc="best")
+save_pub_figure(fig, f"Plots/Eigenspectrum_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 7. Loss curves
-axes[2, 0].plot(history["epoch"], history["train_loss"], label="train")
-axes[2, 0].plot(history["epoch"], history["test_loss"], label="test")
-axes[2, 0].set_yscale("log")
-axes[2, 0].set_title("Loss evolution")
-axes[2, 0].set_xlabel("epoch")
-axes[2, 0].set_ylabel("MSE Loss")
-axes[2, 0].legend()
-
-# 8. Sensitivity persistence
-ax = axes[2, 1]
-ax2 = ax.twinx()
-l1 = ax.plot(history["epoch"], history["spearman_init_current"], label="Spearman(init, current)", color='b')
-l2 = []
-l3 = []
-if any(~np.isnan(np.array(history["spearman_ref_current"], dtype=np.float64))):
-    l2 = ax.plot(history["epoch"], history["spearman_ref_current"], label="Spearman(ref, current)", color='g')
-    l3 = ax2.plot(history["epoch"], history["ref_topk_mass"], linestyle="--", label="Mass in ref top-k", color='g')
-m1 = ax2.plot(history["epoch"], history["init_topk_mass"], linestyle="--", label="Mass in init top-k", color='b')
-ax.set_ylim(-1.0, 1.0)
-ax2.set_ylim(0.0, 1.0)
-ax.set_title("Sensitivity persistence over training")
-ax.set_xlabel("epoch")
-ax.set_ylabel("rank correlation")
-ax2.set_ylabel("sensitivity mass")
-lines = l1 + l2 + m1 + l3
-labels = [line.get_label() for line in lines]
-ax.legend(lines, labels, loc="best")
-
-# 9. Early-vs-final normalised sensitivity scores
-eps = 1e-30
-low_frac = 0.25
-
-# S_early = S_ref if S_ref is not None else S_init
-
-S_early = S_init
-
-S_early_norm = S_early / (S_early.sum() + eps)
-S_final_norm = S_final / (S_final.sum() + eps)
-
-early_cutoff = torch.quantile(S_early_norm, low_frac)
-final_cutoff = torch.quantile(S_final_norm, low_frac)
-
-persistently_low_mask = (
-    (S_early_norm <= early_cutoff) &
-    (S_final_norm <= final_cutoff)
-)
-
-x_np = S_early_norm.detach().cpu().numpy()
-y_np = S_final_norm.detach().cpu().numpy()
-mask_np = persistently_low_mask.detach().cpu().numpy()
-
-axes[2, 2].scatter(
-    x_np[~mask_np],
-    y_np[~mask_np],
-    s=8,
-    alpha=0.35,
-    label="other parameters",
-    marker = 'o',
-    color = 'g'
-)
-
-axes[2, 2].scatter(
-    x_np[mask_np],
-    y_np[mask_np],
-    s=10,
-    alpha=0.9,
-    label="persistently low",
-    marker = 'x',
-    color = 'b'
-)
-
-lims = [
-    min(x_np.min(), y_np.min()),
-    max(x_np.max(), y_np.max())
-]
-
-axes[2, 2].plot(
-    lims,
-    lims,
-    linestyle=":",
-    linewidth=1.2,
-    color="k",
-    label="y = x"
-)
-
-axes[2, 2].axvline(
-    early_cutoff.detach().cpu().item(),
-    linestyle="--",
-    linewidth=1.2,
-    color = 'r'
-)
-
-axes[2, 2].axhline(
-    final_cutoff.detach().cpu().item(),
-    linestyle="--",
-    linewidth=1.2,
-    color='r'
-)
-
-axes[2, 2].set_xscale("log")
-axes[2, 2].set_yscale("log")
-axes[2, 2].set_title("Persistently low sensitivity")
-axes[2, 2].set_xlabel("initial sensitivity mass fraction")
-axes[2, 2].set_ylabel("final sensitivity mass fraction")
-axes[2, 2].legend()
-
-plt.tight_layout()
-plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
-plt.close(fig)
-
-
-
-
-
-
-
-# ============================================================
-# Additional low-rank structure diagnostics
-# ============================================================
-
-eps = 1e-30
-
-# Reuse the same idea: order parameters by persistent low sensitivity.
-key = torch.min(S_init, S_final)
-perm = torch.argsort(key)
-
-# Reorder covariance matrices for visualization.
-C_init_ord_n = C_init_n[perm][:, perm]
-C_final_ord_n = C_final_n[perm][:, perm]
-
-# Eigen-decompositions of normalized covariance matrices.
-# eigh returns ascending eigenvalues; flip to descending.
-evals_init, evecs_init = torch.linalg.eigh(C_init_n.cpu())
-evals_final, evecs_final = torch.linalg.eigh(C_final_n.cpu())
-
-evals_init = evals_init.flip(0)
-evecs_init = evecs_init.flip(1).to(device)
-
-evals_final = evals_final.flip(0)
-evecs_final = evecs_final.flip(1).to(device)
-
-# Numerical cleanup for cumulative variance / residual curves.
-evals_init_pos = evals_init.clamp_min(0.0)
-evals_final_pos = evals_final.clamp_min(0.0)
-
-cum_init = torch.cumsum(evals_init_pos, dim=0) / (evals_init_pos.sum() + eps)
-cum_final = torch.cumsum(evals_final_pos, dim=0) / (evals_final_pos.sum() + eps)
-
-resid_init = 1.0 - cum_init
-resid_final = 1.0 - cum_final
-
-# Effective rank diagnostics.
-p_init = evals_init_pos / (evals_init_pos.sum() + eps)
-p_final = evals_final_pos / (evals_final_pos.sum() + eps)
-
-eff_rank_init = torch.exp(-(p_init * torch.log(p_init + eps)).sum()).item()
-eff_rank_final = torch.exp(-(p_final * torch.log(p_final + eps)).sum()).item()
-
-# Top-k loadings for a heatmap.
-k_show = int(np.ceil(min(max(eff_rank_init, eff_rank_final), evecs_final.shape[1])))
-loadings_final = evecs_final[perm, :k_show].detach().cpu().numpy()
-
-# Pairwise projection coordinates for the top 3 modes.
-# These are parameter coordinates in the dominant eigenspace.
-
-coords_final = (evecs_final[:, :3] * torch.sqrt(evals_final_pos[:3].to(device).clamp_min(eps))).detach().cpu().numpy()
-
-sens_color = np.log10((S_final / (S_final.sum() + eps) + eps).detach().cpu().numpy())
-
-# -----------------------
-# Figure 1: rank / energy
-# -----------------------
-fig2, axes2 = plt.subplots(2, 2, figsize=(18, 13))
-
-# 1) Cumulative explained variance.
-k = np.arange(1, len(cum_final) + 1)
-axes2[0, 0].plot(k, cum_init.detach().cpu().numpy(), label=f"initial (eff. rank {eff_rank_init:.1f})", linewidth=1.6)
-axes2[0, 0].plot(k, cum_final.detach().cpu().numpy(), label=f"final (eff. rank {eff_rank_final:.1f})", linewidth=1.6)
-axes2[0, 0].axvline(k_show, linestyle="--", linewidth=1.2, color="k", label=f"k = {k_show}")
-axes2[0, 0].axhline(0.90, linestyle=":", linewidth=1.0, color="gray")
-axes2[0, 0].axhline(0.95, linestyle=":", linewidth=1.0, color="gray")
-axes2[0, 0].set_title("Cumulative explained variance")
-axes2[0, 0].set_xlabel("number of modes k")
-axes2[0, 0].set_ylabel("fraction of variance explained")
-axes2[0, 0].set_ylim(0.0, 1.02)
-axes2[0, 0].legend(loc="lower right")
-
-# 2) Scree plot with cumulative curve on a second axis.
-ax = axes2[0, 1]
-ax2 = ax.twinx()
-
-k = np.arange(1, len(evals_final_pos) + 1)
-l1 = ax.plot(k, (evals_init_pos / (evals_init_pos.max() + eps)).detach().cpu().numpy(),
-             label="initial", linewidth=1.4)
-l2 = ax.plot(k, (evals_final_pos / (evals_final_pos.max() + eps)).detach().cpu().numpy(),
-             label="final", linewidth=1.4)
-l3 = ax2.plot(k, cum_final.detach().cpu().numpy(),
-              label="final cumulative", linestyle="--", linewidth=1.4, color="k")
-
+fig, ax = plt.subplots(figsize=(7.4, 6.0), constrained_layout=False)
+ax.plot(history["epoch"], history["train_loss"], label="train", color=ACCENT_BLUE)
+ax.plot(history["epoch"], history["test_loss"], label="test", color=ACCENT_ORANGE)
 ax.set_yscale("log")
-ax.set_title("Scree plot and cumulative variance")
-ax.set_xlabel("eigenvalue index")
-ax.set_ylabel("normalized eigenvalue")
-ax2.set_ylabel("cumulative explained variance")
-ax2.set_ylim(0.0, 1.02)
+ax.set_title("Loss evolution")
+ax.set_xlabel("Epoch")
+ax.set_ylabel("MSE loss")
+prettify_axes(ax)
+ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+beautify_legend(ax, loc="best")
+save_pub_figure(fig, f"Plots/Loss_Evolution_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
-lines = l1 + l2 + l3
-labels = [line.get_label() for line in lines]
-ax.legend(lines, labels, loc="lower left")
 
-# 3) Heatmap of top eigenvector loadings, ordered by persistent low sensitivity.
-im2 = axes2[1, 0].imshow(
-    np.abs(loadings_final),
-    aspect="auto",
-    cmap="RdBu_r",
-    # vmin=-np.max(np.abs(loadings_final)),
-    # vmax=np.max(np.abs(loadings_final)),
+# ============================================================
+# Separate sensitivity distribution figure
+# ============================================================
+
+eps = 1e-30
+
+# Normalize so the two distributions are comparable on the same scale.
+S_init_dist = S_init.detach().cpu().numpy()
+S_final_dist = S_final.detach().cpu().numpy()
+
+# Use common log-spaced bins over the positive support.
+positive_vals = np.concatenate([
+    S_init_dist[S_init_dist > 0],
+    S_final_dist[S_final_dist > 0],
+])
+positive_vals = positive_vals[np.isfinite(positive_vals)]
+
+if positive_vals.size > 0:
+    bins = np.logspace(
+        np.log10(positive_vals.min()),
+        np.log10(positive_vals.max()),
+        50,
+    )
+else:
+    bins = 50
+
+fig3, ax3 = plt.subplots(figsize=(8.8, 5.8), constrained_layout=False)
+
+ax3.hist(
+    S_init_dist,
+    bins=bins,
+    density=True,
+    alpha=0.42,
+    label="initial",
+    histtype="stepfilled",
+    edgecolor=ACCENT_BLUE,
+    linewidth=0.9,
+    color=ACCENT_BLUE,
 )
-axes2[1, 0].set_title("Top eigenvector loadings\n(parameters ordered by persistent low sensitivity)")
-axes2[1, 0].set_xlabel("mode index")
-axes2[1, 0].set_ylabel("parameter rank")
-axes2[1, 0].set_xticks(np.arange(k_show))
-axes2[1, 0].set_xticklabels(np.arange(1, k_show + 1))
-plt.colorbar(im2, ax=axes2[1, 0], label="loading")
+ax3.hist(
+    S_final_dist,
+    bins=bins,
+    density=True,
+    alpha=0.42,
+    label="final",
+    histtype="stepfilled",
+    edgecolor=ACCENT_ORANGE,
+    linewidth=0.9,
+    color=ACCENT_ORANGE,
+)
 
-# 4) Residual energy after truncation.
-axes2[1, 1].plot(k, resid_init.detach().cpu().numpy(), label="initial", linewidth=1.6)
-axes2[1, 1].plot(k, resid_final.detach().cpu().numpy(), label="final", linewidth=1.6)
-axes2[1, 1].axvline(k_show, linestyle="--", linewidth=1.2, color="k", label=f"k = {k_show}")
-axes2[1, 1].set_title("Residual energy after rank-k truncation")
-axes2[1, 1].set_xlabel("number of retained modes k")
-axes2[1, 1].set_ylabel("residual fraction")
-axes2[1, 1].set_ylim(0.0, 1.02)
-axes2[1, 1].legend(loc="upper right")
 
-plt.tight_layout()
-plt.savefig(f"Plots/Low_Rank_Structure_Summary_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
-plt.close(fig2)
+ax3.set_xscale("log")
+ax3.set_yscale("log")
+ax3.set_title("Distribution of normalized sensitivities")
+ax3.set_xlabel("Sensitivity mass fraction")
+ax3.set_ylabel("Density")
+prettify_axes(ax3)
+ax3.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax3.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax3.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+ax3.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+beautify_legend(ax3, loc="best")
+save_pub_figure(
+    fig3,
+    f"Plots/Sensitivity_Distribution_Initial_vs_Final_"
+    f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
+)
 
+
+
+# ============================================================
+# Separate plot: unnormalised sensitivity vs parameter magnitude
+# ============================================================
+
+
+param_mag_init = flatten_param_magnitudes(initial_model)
+param_mag_final = flatten_param_magnitudes(model)
+
+sens_init_red = reduce_sensitivity_to_parameter_level(initial_model, S_init)
+sens_final_red = reduce_sensitivity_to_parameter_level(model, S_final)
+
+# Safety clamp for log axes.
+eps = 1e-30
+x_init = param_mag_init.clamp_min(eps).cpu().numpy()
+y_init = sens_init_red.clamp_min(eps).cpu().numpy()
+
+x_final = param_mag_final.clamp_min(eps).cpu().numpy()
+y_final = sens_final_red.clamp_min(eps).cpu().numpy()
+
+fig4, ax4 = plt.subplots(figsize=(8.2, 6.0), constrained_layout=False)
+
+ax4.scatter(
+    x_init,
+    y_init,
+    s=9,
+    alpha=0.35,
+    label="initial",
+    marker="o",
+    linewidths=0.0,
+    color=ACCENT_BLUE,
+    rasterized=True,
+)
+
+ax4.scatter(
+    x_final,
+    y_final,
+    s=14,
+    alpha=0.38,
+    label="final",
+    marker="x",
+    linewidths=0.9,
+    color=ACCENT_ORANGE,
+    rasterized=True,
+)
+
+
+ax4.set_xscale("log")
+ax4.set_yscale("log")
+ax4.set_title("Unnormalised sensitivity vs parameter magnitude")
+ax4.set_xlabel(r"$|	\theta_i|$")
+ax4.set_ylabel(r"$S(\theta_i) $")
+prettify_axes(ax4)
+ax4.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax4.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+ax4.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+ax4.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+beautify_legend(ax4, loc="best")
+save_pub_figure(
+    fig4,
+    f"Plots/Sensitivity_vs_Parameter_Magnitude_"
+    f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
+)
+
+
+
+# ============================================================
+# Absolute sensitivity evolution
+# ============================================================
+Q_abs = np.stack(history["mean_abs_sensitivity"], axis=0)        # [n_checkpoints, n_params]
+
+# Absolute sensitivity heatmap over training
+fig, ax = plt.subplots(figsize=(9.0, 6.0), constrained_layout=False)
+
+im = ax.imshow(
+    Q_abs.T,
+    aspect="auto",
+    origin="lower",
+    interpolation="nearest",
+    cmap="magma",
+)
+
+ax.set_title(r"Absolute sensitivity over training, $\mathbb{E}_x[|\partial f / \partial 	heta_i|]$")
+ax.set_xlabel("Checkpoint index")
+ax.set_ylabel("Parameter index")
+prettify_axes(ax)
+
+cbar = fig.colorbar(im, ax=ax, pad=0.02, fraction=0.046)
+cbar.set_label(r"mean $|\partial f / \partial 	heta_i|$")
+cbar.ax.tick_params(direction="in", length=4, width=0.7)
+cbar.outline.set_linewidth(0.8)
+
+save_pub_figure(
+    fig,
+    f"Plots/Absolute_Sensitivity_Over_Training_"
+    f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
+)
 
 
 

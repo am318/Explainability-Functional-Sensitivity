@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.func import jacrev, functional_call, vmap
+import matplotlib.pyplot as plt
 
 # ============================================================
 # Utilities
@@ -15,121 +16,207 @@ def parameter_count(model):
     return sum(p.numel() for p in model.parameters())
 
 
+def _capture_state(
+    model: nn.Module,
+) -> tuple[list[str], tuple[torch.Tensor, ...], dict[str, torch.Tensor]]:
+    """
+    Snapshot parameters/buffers once.
+
+    Using a stable name order keeps flattening deterministic and avoids
+    repeated named_parameter traversal inside the hot path.
+    """
+    param_items = list(model.named_parameters())
+    buffer_dict = dict(model.named_buffers())
+
+    param_names = [k for k, _ in param_items]
+    params = tuple(v for _, v in param_items)
+
+    return param_names, params, buffer_dict
+
+
+def _flat_row_from_param_grads(grads: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    """Flatten a pytree of parameter gradients into one 1D row."""
+    return torch.cat([g.reshape(-1) for g in grads], dim=0)
+
+
+def _make_single_sample_jacobian_fn(
+    model: nn.Module,
+    param_names: list[str],
+    buffer_dict: dict[str, torch.Tensor],
+):
+    """
+    Returns a function jac_row(xi, params) -> [P] for one sample.
+    """
+
+    def forward_on_params(
+        params: tuple[torch.Tensor, ...],
+        xi: torch.Tensor,
+    ) -> torch.Tensor:
+        param_dict = dict(zip(param_names, params))
+        out = functional_call(
+            model,
+            {**param_dict, **buffer_dict},
+            (xi.unsqueeze(0),),
+        )
+        return out.squeeze()
+
+    jacobian_of_forward = jacrev(forward_on_params, argnums=0)
+
+    def jac_row(xi: torch.Tensor, params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        grads = jacobian_of_forward(params, xi)
+        return _flat_row_from_param_grads(grads)
+
+    return jac_row
+
+
 def compute_parameter_jacobian(
     model: nn.Module,
     x: torch.Tensor,
     chunk_size: int = 64,
 ) -> torch.Tensor:
     """
-    J shape:
-        [N_data, N_parameters]
-    Row k:
-        df(x_k)/dtheta
+    Returns J with shape [N_data, N_parameters].
 
-    Optimisations vs the original:
-    - Uses torch.vmap + jacrev (functorch) to compute all per-sample
-      gradients in a single vectorised pass instead of a Python for-loop.
-      On MPS this fuses the forward+backward sweeps, removing Python
-      dispatch overhead that grows linearly with N_data.
-    - Processes data in chunks so peak MPS memory stays bounded for
-      large datasets.  Tune `chunk_size` to fit your VRAM budget.
-    - param_dict is built once outside the vmap'd function; the
-      stateless `functional_call` path avoids repeated graph rebuilds.
+    This version:
+    - snapshots params/buffers once
+    - uses vmap(jacrev(...)) for per-sample Jacobians
+    - computes in chunks to bound peak memory
+    - avoids rebuilding parameter dictionaries inside the inner loop
     """
     device = next(model.parameters()).device
     x = x.to(device)
 
-    # Capture current parameters and buffers as plain dicts.
-    # functional_call uses these instead of model.state_dict() so the
-    # computation graph never touches nn.Parameter storage directly —
-    # a requirement for jacrev/vmap composition.
-    param_dict = {k: v for k, v in model.named_parameters()}
-    buffer_dict = {k: v for k, v in model.named_buffers()}
+    param_names, params, buffer_dict = _capture_state(model)
+    jac_row = _make_single_sample_jacobian_fn(model, param_names, buffer_dict)
 
-    def forward_on_params(params: dict, xi: torch.Tensor) -> torch.Tensor:
-        """
-        Stateless forward for a single unbatched sample xi.
-        xi has shape [*input_dims] (no batch axis — vmap injects that).
-        Returns a scalar output.
-        """
-        return functional_call(
-            model, {**params, **buffer_dict}, (xi.unsqueeze(0),)
-        ).squeeze()
+    batched_jacobian = vmap(jac_row, in_dims=(0, None), randomness="error")
 
-    def jacobian_row(xi: torch.Tensor) -> torch.Tensor:
-        """
-        Use jacrev to differentiate forward_on_params wrt param_dict
-        for a single sample.  Returns a dict of per-parameter Jacobians;
-        we flatten them into one row vector.
-        """
-        # jacrev(f, argnums=0) differentiates f's first argument.
-        # Result is a dict with the same keys as param_dict, each value
-        # having shape (*param_shape) because the output is scalar.
-        jac_dict = jacrev(forward_on_params, argnums=0)(param_dict, xi)
-        return torch.cat([j.reshape(-1) for j in jac_dict.values()])
-
-    # vmap batches jacobian_row over the sample dimension.
-    # Because jacrev is a torch.func transform (not autograd.grad),
-    # it composes correctly with vmap — this is the key fix.
-    batched_jacobian = vmap(jacobian_row, in_dims=0, randomness="error")
-
-    # ----------------------------------------------------------------
-    # Chunked execution: bounds peak MPS memory for large N_data.
-    # Tune chunk_size to fit your device's memory budget.
-    # ----------------------------------------------------------------
-    rows = []
+    rows: list[torch.Tensor] = []
     for start in range(0, x.shape[0], chunk_size):
         x_chunk = x[start : start + chunk_size]
-        rows.append(batched_jacobian(x_chunk))
+        rows.append(batched_jacobian(x_chunk, params))
 
     return torch.cat(rows, dim=0)
+
+
+def iter_jacobian_chunks(
+    model: nn.Module,
+    x: torch.Tensor,
+    chunk_size: int = 64,
+):
+    """
+    Yield Jacobian chunks without materializing the full J.
+
+    Each yielded tensor has shape [chunk, P].
+    Useful when the downstream goal is covariance, sensitivity scores,
+    or other reductions over J.
+    """
+    device = next(model.parameters()).device
+    x = x.to(device)
+
+    param_names, params, buffer_dict = _capture_state(model)
+    jac_row = _make_single_sample_jacobian_fn(model, param_names, buffer_dict)
+
+    batched_jacobian = vmap(jac_row, in_dims=(0, None), randomness="error")
+
+    for start in range(0, x.shape[0], chunk_size):
+        x_chunk = x[start : start + chunk_size]
+        yield batched_jacobian(x_chunk, params)
+
+
+def compute_covariance_from_model(
+    model: nn.Module,
+    x: torch.Tensor,
+    chunk_size: int = 64,
+) -> torch.Tensor:
+    """
+    Compute C = (1/N) J^T J without ever storing full J.
+
+    This is the preferred path if you only need the covariance matrix.
+    """
+    device = next(model.parameters()).device
+    x = x.to(device)
+
+    # Infer P from one Jacobian chunk, then accumulate into C.
+    jac_chunks = iter_jacobian_chunks(model, x, chunk_size=chunk_size)
+
+    first_chunk = next(jac_chunks)
+    _, P = first_chunk.shape
+
+    C = torch.zeros((P, P), dtype=first_chunk.dtype, device=first_chunk.device)
+    N = 0
+
+    C.add_(first_chunk.T @ first_chunk)
+    N += first_chunk.shape[0]
+
+    for Jc in jac_chunks:
+        C.add_(Jc.T @ Jc)
+        N += Jc.shape[0]
+
+    return C / N
 
 
 def compute_covariance(J: torch.Tensor, chunk_size: int = 512) -> torch.Tensor:
     """
     C = (1/N) J^T J
 
-    Optimisations vs the original:
-    - Accumulates J^T J in chunks along the N_data axis so the
-      intermediate [N_data, P] × [N_data, P] product never has to live
-      in memory all at once.  For large N this can be the difference
-      between fitting on MPS and OOM-ing.
-    - Uses torch.linalg.multi_dot for clarity; fused matmul on MPS.
+    Retained for the case where J is already available.
     """
     N, P = J.shape
-    C = torch.zeros(P, P, dtype=J.dtype, device=J.device)
+    C = torch.zeros((P, P), dtype=J.dtype, device=J.device)
 
     for start in range(0, N, chunk_size):
-        Jc = J[start : start + chunk_size]   # [chunk, P]
+        Jc = J[start : start + chunk_size]
         C.add_(Jc.T @ Jc)
 
     return C / N
+
+
+def sensitivity_scores_from_model(
+    model: nn.Module,
+    x: torch.Tensor,
+    chunk_size: int = 64,
+) -> torch.Tensor:
+    """
+    S_i = E[(df/dtheta_i)^2]
+
+    Computes the mean of squared Jacobian entries directly from chunks.
+    """
+    device = next(model.parameters()).device
+    x = x.to(device)
+
+    total_sq: torch.Tensor | None = None
+    N = 0
+
+    for Jc in iter_jacobian_chunks(model, x, chunk_size=chunk_size):
+        sq = (Jc * Jc).sum(dim=0)
+        total_sq = sq if total_sq is None else total_sq + sq
+        N += Jc.shape[0]
+
+    if total_sq is None:
+        raise ValueError("Input x is empty; cannot compute sensitivity scores.")
+
+    return total_sq / N
 
 
 def sensitivity_scores(J: torch.Tensor) -> torch.Tensor:
     """
     S_i = E[(df/dtheta_i)^2]
 
-    No change needed — already a vectorised mean over a pre-computed
-    matrix.  Keeping the original implementation.
+    Kept for the case where J is already materialized.
     """
-    return torch.mean(J ** 2, dim=0)
+    return torch.mean(J * J, dim=0)
 
 
 def eigvals_from_covariance(C: torch.Tensor) -> torch.Tensor:
     """
-    Optimisations vs the original:
-    - Stays on the MPS device via torch.linalg.eigvalsh instead of
-      round-tripping to CPU numpy.  MPS dispatches to Accelerate LAPACK
-      under the hood, which is the same library numpy uses on macOS.
-    - torch.linalg.eigvalsh already returns values in ascending order;
-      flip in-place with torch.flip (no numpy copy).
-    - torch.clamp replaces np.clip.
+    Eigenvalues of symmetric PSD covariance matrix.
+
+    Uses eigvalsh, which exploits symmetry.
     """
-    eig = torch.linalg.eigvalsh(C.cpu())  
+    eig = torch.linalg.eigvalsh(C.cpu())
     eig = torch.clamp(eig, min=0.0)
-    eig = torch.flip(eig, dims=[0])         # descending
-    return eig.float()
+    return torch.flip(eig, dims=[0]).to(dtype=torch.float32)
 
 
 def topk_indices(scores: torch.Tensor, frac: float = 0.1) -> torch.Tensor:
@@ -265,3 +352,94 @@ def effective_rank(eigs, eps=1e-30):
     x = np.clip(x, eps, None)
     p = x / x.sum()
     return float(np.exp(-(p * np.log(p)).sum()))
+
+def reduce_jacobian_to_parameter_vector(J: torch.Tensor, mode: str = "abs") -> torch.Tensor:
+    """
+    Reduce a Jacobian/sensitivity tensor to one scalar per parameter.
+
+    Expected J shapes:
+      - [n_samples, n_params]
+      - [n_samples, n_outputs, n_params]
+
+    Returns:
+      - [n_params]
+    """
+    J = J.detach()
+
+    if J.ndim == 2:
+        if mode == "abs":
+            return J.abs().mean(dim=0)
+        elif mode == "signed":
+            return J.mean(dim=0)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+    if J.ndim == 3:
+        if mode == "abs":
+            return J.abs().mean(dim=(0, 1))
+        elif mode == "signed":
+            return J.mean(dim=(0, 1))
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+    raise ValueError(f"Unsupported Jacobian shape: {tuple(J.shape)}")
+
+def flatten_param_magnitudes(mod: nn.Module):
+    """Flatten all trainable parameters into one 1D vector of absolute values."""
+    chunks = []
+    for p in mod.parameters():
+        if p.requires_grad:
+            chunks.append(p.detach().abs().reshape(-1))
+    return torch.cat(chunks, dim=0)
+
+
+def reduce_sensitivity_to_parameter_level(mod: nn.Module, sens: torch.Tensor):
+    """
+    Reduce sensitivities to one value per scalar parameter.
+
+    This handles the common case where sensitivity_scores(J) returns
+    one sensitivity per parameter per output dimension, e.g. length = 2 * n_params
+    for a 2D output field.
+    """
+    sens_flat = sens.detach().reshape(-1)
+
+    param_count = sum(p.numel() for p in mod.parameters() if p.requires_grad)
+
+    # Already aligned.
+    if sens_flat.numel() == param_count:
+        return sens_flat
+
+    # Common case: output_dim x n_params or n_params x output_dim flattened.
+    if sens_flat.numel() % param_count == 0:
+        out_dim = sens_flat.numel() // param_count
+        sens_reduced = sens_flat.view(out_dim, param_count).norm(dim=0)
+        return sens_reduced
+
+    raise ValueError(
+        f"Cannot reduce sensitivity vector of length {sens_flat.numel()} "
+        f"to parameter count {param_count}."
+    )
+
+def prettify_axes(ax, *, grid: bool = False):
+    ax.tick_params(which="major", direction="in", top=True, right=True, length=5, width=0.8)
+    ax.tick_params(which="minor", direction="in", top=True, right=True, length=3, width=0.6)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.9)
+    if grid:
+        ax.grid(True, alpha=0.18, linewidth=0.6)
+    ax.set_axisbelow(True)
+
+
+def beautify_legend(ax, **kwargs):
+    defaults = dict(frameon=True, framealpha=0.92, edgecolor="0.8")
+    defaults.update(kwargs)
+    leg = ax.legend(**defaults)
+    if leg is not None:
+        leg.get_frame().set_linewidth(0.8)
+    return leg
+
+
+def save_pub_figure(fig, path):
+    fig.tight_layout(pad=0.6)
+    fig.savefig(path)
+    plt.close(fig)
