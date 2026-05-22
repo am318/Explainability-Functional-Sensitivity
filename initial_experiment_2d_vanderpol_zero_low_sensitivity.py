@@ -32,7 +32,7 @@ class Config:
 
     n_hidden: int = 4
     hidden_width: int = 64
-    lr: float = 1e-3
+    lr: float = 1e-1
     epochs: int = 100000
     checkpoint_interval: int = epochs // 25
     topk_frac: float = 0.10
@@ -187,6 +187,22 @@ init_topk_idx = topk_indices(S_init, cfg.topk_frac)
 # Optimisation
 # ============================================================
 
+def physics_informed_loss(pred, state, mu):
+    """Residual loss for the Van der Pol vector field.
+
+    The model predicts [dx/dt, dv/dt]. The physics constraint is
+        dx/dt = v
+        dv/dt = mu * (1 - x^2) * v - x
+    so the loss penalizes the residual of those equations directly.
+    """
+    x = state[..., 0:1]
+    v = state[..., 1:2]
+
+    residual_dx = pred[..., 0:1] - v
+    residual_dv = pred[..., 1:2] - (mu * (1.0 - x ** 2) * v - x)
+
+    return (residual_dx.pow(2).mean() + residual_dv.pow(2).mean())
+
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
 
@@ -233,7 +249,9 @@ for epoch in range(cfg.epochs):
         if p.requires_grad and "bias" not in name
     )
 
-    task_loss = criterion(pred, y_train)
+    # task_loss = criterion(pred, y_train)
+
+    task_loss = physics_informed_loss(pred, x_train, cfg.mu)
 
     loss = task_loss + cfg.l1_lambda * l1_penalty
 
