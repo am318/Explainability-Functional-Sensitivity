@@ -38,17 +38,18 @@ class Config:
     topk_frac: float = 0.10
     compare_epoch: int = epochs // 40
 
-    # Van der Pol oscillator parameter and phase-space domain.
-    mu: float = 3.0
-    x_min: float = -3.0
-    x_max: float = 3.0
-    v_min: float = -5.0
-    v_max: float = 5.0
+    # Morse potential parameters
+    x_min: float = -2.0
+    x_max: float = 4.0
+    v_min: float = -3.0
+    v_max: float = 3.0
+
+    D_e: float = 1.0
+    a: float = 1.0
+    x_e: float = 0.0
 
     noise_multiplier: float = 5e-2
     plot_grid_size: int = 45
-
-    l1_lambda: float = 1e-3
 
 
 cfg = Config()
@@ -67,33 +68,42 @@ os.makedirs("Plots", exist_ok=True)
 
 
 # ============================================================
-# Dataset: learn the 2D Van der Pol vector field
+# Dataset: learn the 2D Morse potential dynamics
 # ============================================================
 # Input:  state = [x, v]
 # Target: f(x, v) = [dx/dt, dv/dt]
 #         dx/dt = v
-#         dv/dt = mu * (1 - x^2) * v - x
+#         dv/dt = -dV/dx
+#
+# Morse potential:
+#   V(x) = D_e * (1 - exp(-a * (x - x_e)))^2
+#
+# Force:
+#   -dV/dx = 2 * a * D_e * (1 - exp(-a * (x - x_e))) * exp(-a * (x - x_e))
 
-def vanderpol_vector_field(state, mu=3.0):
+def morse_vector_field(state, D_e=1.0, a=1.0, x_e=0.0):
     x = state[..., 0:1]
     v = state[..., 1:2]
+
+    exp_term = torch.exp(-a * (x - x_e))
     dxdt = v
-    dvdt = mu * (1.0 - x ** 2) * v - x
+    dvdt = 2.0 * a * D_e * (1.0 - exp_term) * exp_term
+
     return torch.cat([dxdt, dvdt], dim=-1)
 
 
-def sample_phase_space(n):
-    x = cfg.x_min + (cfg.x_max - cfg.x_min) * torch.rand(n, 1, dtype=torch.float32)
-    v = cfg.v_min + (cfg.v_max - cfg.v_min) * torch.rand(n, 1, dtype=torch.float32)
+def sample_phase_space(n, x_min=-2.0, x_max=4.0, v_min=-3.0, v_max=3.0):
+    x = x_min + (x_max - x_min) * torch.rand(n, 1, dtype=torch.float32)
+    v = v_min + (v_max - v_min) * torch.rand(n, 1, dtype=torch.float32)
     return torch.cat([x, v], dim=-1)
 
 
 x_train = sample_phase_space(cfg.n_train).to(device)
-y_train_clean = vanderpol_vector_field(x_train, mu=cfg.mu)
+y_train_clean = morse_vector_field(x_train, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
 y_train = y_train_clean + cfg.noise_multiplier * torch.randn_like(y_train_clean)
 
 x_test = sample_phase_space(cfg.n_test).to(device)
-y_test_clean = vanderpol_vector_field(x_test, mu=cfg.mu)
+y_test_clean = morse_vector_field(x_test, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
 y_test = y_test_clean + cfg.noise_multiplier * torch.randn_like(y_test_clean)
 
 # # Fixed subset for sensitivity analysis.
@@ -341,7 +351,7 @@ X, V = torch.meshgrid(grid_x, grid_v, indexing="xy")
 grid_state = torch.stack([X.reshape(-1), V.reshape(-1)], dim=-1)
 
 with torch.no_grad():
-    true_field = vanderpol_vector_field(grid_state, mu=cfg.mu)
+    true_field = morse_vector_field(grid_state, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
     pred_field = model(grid_state)
     field_error = torch.linalg.norm(pred_field - true_field, dim=-1)
 
@@ -673,8 +683,10 @@ with torch.no_grad():
     max_grid_error = float(field_error.max().detach().cpu().item())
 
 summary = {
-    "target": "2D Van der Pol vector field f(x, v) = [v, mu * (1 - x^2) * v - x]",
-    "mu": cfg.mu,
+    "target": "2D Morse potential vector field f(x, v) = [v, 2 * a * D_e * (1 - exp(-a * (x - x_e))) * exp(-a * (x - x_e))]",
+    "morse_D_e": cfg.D_e,
+    "morse_a": cfg.a,
+    "morse_x_e": cfg.x_e,
     "parameter_count": parameter_count(model),
     "final_train_mse_clean": final_train_mse,
     "final_test_mse_clean": final_test_mse,
