@@ -30,12 +30,13 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 4
-    hidden_width: int = 64
+    n_hidden: int = 2
+    hidden_width: int = 32
     lr: float = 1e-2
     epochs: int = 100000
     checkpoint_interval: int = epochs // 25
     topk_frac: float = 0.10
+    nonzero_fraction: float = 0.6
     compare_epoch: int = epochs // 25
 
     # Van der Pol oscillator parameter and phase-space domain.
@@ -224,6 +225,7 @@ S_ref = None
 C_ref = None
 ref_topk_idx = None
 ref_epoch = None
+trainable_masks = None
 
 
 # ============================================================
@@ -233,9 +235,12 @@ ref_epoch = None
 print("\nTraining")
 print("========")
 
-for epoch in range(cfg.epochs + 1):
+for epoch in range(cfg.epochs):
     model.train()
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad()
+
+    if trainable_masks is not None:
+        apply_masks_to_state(model, optimizer, trainable_masks)
 
     pred = model(x_train)
 
@@ -253,16 +258,37 @@ for epoch in range(cfg.epochs + 1):
 
     loss.backward()
 
+    if trainable_masks is not None:
+        apply_masks_to_state(model, optimizer, trainable_masks)
+
     optimizer.step()
+
+    if trainable_masks is not None:
+        apply_masks_to_state(model, optimizer, trainable_masks)
+
+    if (epoch == cfg.compare_epoch) and (S_ref is None):
+        model.eval()
+        J_ref = compute_parameter_jacobian(model, x_train)
+        S_ref = sensitivity_scores(J_ref).detach().clone()
+        C_ref = compute_covariance(J_ref).detach().clone()
+        ref_topk_idx = topk_indices(S_ref, cfg.topk_frac)
+        ref_epoch = epoch
+        trainable_masks = build_trainable_masks(model, S_ref, cfg.nonzero_fraction)
+        apply_masks_to_state(model, optimizer, trainable_masks)
+        zeroed_fraction_exact = 1.0 - (
+            sum(m.sum().item() for m in trainable_masks) / sum(m.numel() for m in trainable_masks)
+        )
+        print(f"Captured reference snapshot at epoch={ref_epoch}")
+        print(f"Freezing low-sensitivity weights; zeroed fraction = {zeroed_fraction_exact:.3f}")
 
     if epoch % cfg.checkpoint_interval == 0:
         model.eval()
 
         with torch.no_grad():
-            train_loss = criterion(model(x_train), y_train_clean).item()
-            test_loss = criterion(model(x_test), y_test_clean).item()
+            train_loss = criterion(model(x_train), y_train).item()
+            test_loss = criterion(model(x_test), y_test).item()
 
-        J = compute_parameter_jacobian(model, x_sens)
+        J = compute_parameter_jacobian(model, x_train)
         S_curr = sensitivity_scores(J)
 
         rho_init_curr = spearman_corr(S_init, S_curr)
@@ -270,17 +296,14 @@ for epoch in range(cfg.epochs + 1):
 
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
-
-        if (S_ref is None) and (epoch >= cfg.compare_epoch):
-            S_ref = S_curr.detach().clone()
-            C_ref = compute_covariance(J).detach().clone()
-            ref_topk_idx = topk_indices(S_ref, cfg.topk_frac)
-            ref_epoch = epoch
-            print(f"Captured reference snapshot at epoch={ref_epoch}")
+        frozen_fraction = np.nan
 
         if S_ref is not None:
             rho_ref_curr = spearman_corr(S_ref, S_curr)
             ref_topk_mass = mass_on_indices(S_curr, ref_topk_idx)
+            frozen_fraction = 1.0 - (
+                sum(m.sum().item() for m in trainable_masks) / sum(m.numel() for m in trainable_masks)
+            )
 
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
@@ -443,7 +466,7 @@ ax.legend(lines, labels, loc="best")
 # 9. Early-vs-final normalised sensitivity scores
 eps = 1e-30
 # low_frac = 0.25
-low_frac = 1-cfg.topk_frac
+low_frac = 1-cfg.nonzero_fraction
 
 # S_early = S_ref if S_ref is not None else S_init
 
@@ -520,7 +543,7 @@ axes[2, 2].set_ylabel("final sensitivity mass fraction")
 axes[2, 2].legend()
 
 plt.tight_layout()
-plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_freeze_low_sensitivity_{parameter_count(model)}_Parameters.pdf")
+plt.savefig(f"Plots/Initial_Experiment_2D_VanderPol_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 plt.close(fig)
 
 
@@ -573,7 +596,7 @@ eff_rank_init = torch.exp(-(p_init * torch.log(p_init + eps)).sum()).item()
 eff_rank_final = torch.exp(-(p_final * torch.log(p_final + eps)).sum()).item()
 
 # Top-k loadings for a heatmap.
-k_show = min(13, evecs_final.shape[1])
+k_show = int(np.ceil(min(max(eff_rank_init, eff_rank_final), evecs_final.shape[1])))
 loadings_final = evecs_final[perm, :k_show].detach().cpu().numpy()
 
 # Pairwise projection coordinates for the top 3 modes.
@@ -592,7 +615,7 @@ fig2, axes2 = plt.subplots(2, 2, figsize=(18, 13))
 k = np.arange(1, len(cum_final) + 1)
 axes2[0, 0].plot(k, cum_init.detach().cpu().numpy(), label=f"initial (eff. rank {eff_rank_init:.1f})", linewidth=1.6)
 axes2[0, 0].plot(k, cum_final.detach().cpu().numpy(), label=f"final (eff. rank {eff_rank_final:.1f})", linewidth=1.6)
-axes2[0, 0].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[0, 0].axvline(k_show, linestyle="--", linewidth=1.2, color="k", label=f"k = {k_show}")
 axes2[0, 0].axhline(0.90, linestyle=":", linewidth=1.0, color="gray")
 axes2[0, 0].axhline(0.95, linestyle=":", linewidth=1.0, color="gray")
 axes2[0, 0].set_title("Cumulative explained variance")
@@ -624,7 +647,7 @@ lines = l1 + l2 + l3
 labels = [line.get_label() for line in lines]
 ax.legend(lines, labels, loc="lower left")
 
-# 3) Heatmap of top 13 eigenvector loadings, ordered by persistent low sensitivity.
+# 3) Heatmap of top eigenvector loadings, ordered by persistent low sensitivity.
 im2 = axes2[1, 0].imshow(
     np.abs(loadings_final),
     aspect="auto",
@@ -642,7 +665,7 @@ plt.colorbar(im2, ax=axes2[1, 0], label="loading")
 # 4) Residual energy after truncation.
 axes2[1, 1].plot(k, resid_init.detach().cpu().numpy(), label="initial", linewidth=1.6)
 axes2[1, 1].plot(k, resid_final.detach().cpu().numpy(), label="final", linewidth=1.6)
-axes2[1, 1].axvline(13, linestyle="--", linewidth=1.2, color="k", label="k = 13")
+axes2[1, 1].axvline(k_show, linestyle="--", linewidth=1.2, color="k", label=f"k = {k_show}")
 axes2[1, 1].set_title("Residual energy after rank-k truncation")
 axes2[1, 1].set_xlabel("number of retained modes k")
 axes2[1, 1].set_ylabel("residual fraction")
@@ -650,7 +673,7 @@ axes2[1, 1].set_ylim(0.0, 1.02)
 axes2[1, 1].legend(loc="upper right")
 
 plt.tight_layout()
-plt.savefig(f"Plots/Low_Rank_Structure_Summary_{parameter_count(model)}_Parameters.pdf")
+plt.savefig(f"Plots/Low_Rank_Structure_Summary_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 plt.close(fig2)
 
 
@@ -690,7 +713,7 @@ summary = {
     "largest_final_eigenvalue": float(eig_final[0].item()),
 }
 
-with open(f"Plots/final_summary_2d_vanderpol_freeze_low_sensitivity_{parameter_count(model)}_Parameters.json", "w") as f:
+with open(f"Plots/final_summary_2d_vanderpol_freeze_low_sensitivity_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print("\nFinal summary")

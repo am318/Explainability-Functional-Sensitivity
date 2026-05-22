@@ -241,6 +241,25 @@ def apply_masks_to_weights_and_state(model, optimizer, masks):
         if "exp_avg_sq" in state:
             state["exp_avg_sq"].mul_(mask)
 
+def apply_masks_to_state(model, optimizer, masks):
+    """
+    Clear the Adam state of low-sensitivity parameters.
+    This prevents post-compare updates and momentum carry-over.
+    """
+    for p, mask in zip(model.parameters(), masks):
+
+        if p.grad is not None:
+            p.grad.mul_(mask)
+
+        state = optimizer.state.get(p, None)
+        if not state:
+            continue
+
+        if "exp_avg" in state:
+            state["exp_avg"].mul_(mask)
+        if "exp_avg_sq" in state:
+            state["exp_avg_sq"].mul_(mask)
+
 def effective_rank(eigs, eps=1e-30):
     x = eigs.detach().float().cpu().numpy()
     x = np.clip(x, eps, None)
