@@ -31,12 +31,12 @@ class Config:
     # n_sensitivity: int = 128
 
     n_hidden: int = 2
-    hidden_width: int = 16
+    hidden_width: int = 8
     lr: float = 1e-2
-    epochs: int = 10000 # 100000
-    checkpoint_interval: int = epochs // 10 # INCREASE
+    epochs: int = 10000
+    checkpoint_interval: int = epochs // 40
     topk_frac: float = 0.10
-    compare_epoch: int = epochs // 10 #INCREASE
+    compare_epoch: int = epochs // 40
 
     # Van der Pol oscillator parameter and phase-space domain.
     mu: float = 3.0
@@ -240,18 +240,7 @@ for epoch in range(cfg.epochs + 1):
 
     pred = model(x_train)
     task_loss = criterion(pred, y_train)
-
-    # task_loss = physics_informed_loss(pred, x_train, cfg.mu)
-
-    l1_penalty = sum(
-        p.abs().sum()
-        for name, p in model.named_parameters()
-        if p.requires_grad and "bias" not in name
-    )
-
-    loss = task_loss # + cfg.l1_lambda * l1_penalty
-
-    #     loss = criterion(pred, y_train)
+    loss = task_loss
 
     loss.backward()
     optimizer.step()
@@ -260,7 +249,7 @@ for epoch in range(cfg.epochs + 1):
         model.eval()
 
         with torch.no_grad():
-            train_loss = criterion(model(x_train), y_train_clean).item()
+            train_loss = criterion(pred, y_train_clean).item()
             test_loss = criterion(model(x_test), y_test_clean).item()
 
         J = compute_parameter_jacobian(model, x_sens)
@@ -268,9 +257,7 @@ for epoch in range(cfg.epochs + 1):
 
         rho_init_curr = spearman_corr(S_init, S_curr)
         init_topk_mass = mass_on_indices(S_curr, init_topk_idx)
-
-        J = compute_parameter_jacobian(model, x_sens)
-        mean_abs_sens = reduce_jacobian_to_parameter_vector(J, mode="abs").cpu().numpy()
+        mean_abs_sens = mean_abs_sensitivity_by_output(model, x_sens).detach().cpu().numpy()
 
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
@@ -325,7 +312,6 @@ eig_ref = eigvals_from_covariance(C_ref) if S_ref is not None else None
 # Plotting
 # ============================================================
 
-# Publication-oriented plotting defaults.
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
     "font.size": 11,
@@ -342,7 +328,7 @@ plt.rcParams.update({
     "ps.fonttype": 42,
 })
 
-# Conservative, publication-oriented accent palette for non-colormap plots.
+
 ACCENT_BLUE = "#4C72B0"
 ACCENT_TEAL = "#55A868"
 ACCENT_ORANGE = "#C44E52"
@@ -614,30 +600,58 @@ save_pub_figure(
 )
 
 
-
 # ============================================================
 # Absolute sensitivity evolution
 # ============================================================
-Q_abs = np.stack(history["mean_abs_sensitivity"], axis=0)        # [n_checkpoints, n_params]
+Q_abs = np.stack(history["mean_abs_sensitivity"], axis=0)
+checkpoint_epochs = np.array(history["epoch"], dtype=int)
+n_checkpoints, n_outputs, n_params = Q_abs.shape
 
-# Absolute sensitivity heatmap over training
-fig, ax = plt.subplots(figsize=(9.0, 6.0), constrained_layout=False)
+vmax = np.nanmax(Q_abs)
+if not np.isfinite(vmax) or vmax <= 0:
+    vmax = 1.0
 
-im = ax.imshow(
-    Q_abs.T,
-    aspect="auto",
-    origin="lower",
-    interpolation="nearest",
-    cmap="magma",
+fig, axes = plt.subplots(
+    1,
+    n_outputs,
+    figsize=(5.0 * n_outputs + 1.0, 4.0),
+    constrained_layout=True,
+    sharex=True,
 )
+if n_outputs == 1:
+    axes = [axes]
 
-ax.set_title(r"Absolute sensitivity over training, $\mathbb{E}_x[|\partial f / \partial 	heta_i|]$")
-ax.set_xlabel("Checkpoint index")
-ax.set_ylabel("Parameter index")
-prettify_axes(ax)
+im = None
+for out_idx, ax in enumerate(axes):
+    im = ax.imshow(
+        Q_abs[:, out_idx, :].T,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        cmap="magma",
+        vmin=0.0,
+        vmax=vmax,
+        extent=[checkpoint_epochs[0], checkpoint_epochs[-1], -0.5, n_params - 0.5],
+    )
+    # ax.set_title(
+    #     rf"Output {out_idx}: $\mathbb{{E}}_x[|\partial f_{{{out_idx}}} / \partial \theta_i|]$",
+    #     fontsize=9,
+    #     pad=6,
+    # )
+    ax.set_ylabel("Parameter index")
+    prettify_axes(ax)
 
-cbar = fig.colorbar(im, ax=ax, pad=0.02, fraction=0.046)
-cbar.set_label(r"mean $|\partial f / \partial 	heta_i|$")
+for ax in axes:
+    ax.set_xlabel("Iteration number")
+
+# Optional: reduce tick clutter
+tick_step = max(1, len(checkpoint_epochs) // 6)
+xticks = checkpoint_epochs[::tick_step]
+for ax in axes:
+    ax.set_xticks(xticks)
+
+cbar = fig.colorbar(im, ax=axes[-1], pad=0.04, fraction=0.046)
+cbar.set_label(r"mean $|\partial f_k / \partial \theta_i|$")
 cbar.ax.tick_params(direction="in", length=4, width=0.7)
 cbar.outline.set_linewidth(0.8)
 
@@ -646,7 +660,6 @@ save_pub_figure(
     f"Plots/Absolute_Sensitivity_Over_Training_"
     f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
 )
-
 
 
 # ============================================================

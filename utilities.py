@@ -440,6 +440,75 @@ def beautify_legend(ax, **kwargs):
 
 
 def save_pub_figure(fig, path):
-    fig.tight_layout(pad=0.6)
     fig.savefig(path)
     plt.close(fig)
+
+
+def reduce_jacobian_to_output_parameter_matrix(J):
+    """
+    Return per-output mean absolute sensitivities over the sample axis.
+
+    Expected common layouts:
+      J.shape == [n_samples, n_outputs, n_params]
+      J.shape == [n_samples, n_outputs, ...parameter_tensor_shape...]
+    """
+    J_abs = J.detach().abs()
+
+    if J_abs.ndim == 3:
+        # [n_samples, n_outputs, n_params]
+        return J_abs.mean(dim=0)
+
+    if J_abs.ndim >= 4:
+        # [n_samples, n_outputs, ...parameter_tensor_shape...]
+        return J_abs.mean(dim=0).flatten(start_dim=1)
+
+    raise ValueError(f"Unexpected Jacobian shape: {tuple(J_abs.shape)}")
+
+def mean_abs_sensitivity_by_output(model, x):
+    """
+    Returns a tensor of shape [n_outputs, n_params] containing
+    mean_x |d f_k / d theta_i| for each output k and parameter i.
+    """
+    model.eval()
+
+    params = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    param_names = list(params.keys())
+
+    def model_with_params(params_, x_):
+        return torch.func.functional_call(model, (params_, buffers), (x_,))
+
+    def per_sample(xi):
+        def f(params_):
+            # Shape: [1, n_outputs] -> [n_outputs]
+            return model_with_params(params_, xi.unsqueeze(0)).squeeze(0)
+
+        # jac[name] has shape [n_outputs, *param.shape]
+        jac = torch.func.jacrev(f)(params)
+
+        per_output = []
+        n_outputs = next(iter(jac.values())).shape[0]
+        for k in range(n_outputs):
+            chunks = [jac[name][k].reshape(-1).abs() for name in param_names]
+            per_output.append(torch.cat(chunks))
+        return torch.stack(per_output, dim=0)  # [n_outputs, n_params]
+
+    return torch.vmap(per_sample)(x).mean(dim=0)
+
+def mean_abs_sensitivity_from_jacobian(J: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the same quantity used by mean_abs_sensitivity_by_output(model, x_sens),
+    but reuse an already computed Jacobian tensor.
+
+    Expected common layout:
+        J.shape == [n_samples, n_outputs, n_params]
+    Returns:
+        [n_outputs, n_params]
+    """
+    J = J.detach()
+    if J.ndim == 3:
+        return J.abs().mean(dim=0)
+    if J.ndim == 2:
+        # Fallback for degenerate/single-output layouts.
+        return J.abs().mean(dim=0, keepdim=True)
+    raise ValueError(f"Unexpected Jacobian shape: {tuple(J.shape)}")
