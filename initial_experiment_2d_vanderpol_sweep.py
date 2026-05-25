@@ -60,7 +60,7 @@ hidden_width = int(os.getenv("HIDDEN_WIDTH", cfg.hidden_width))
 epochs = int(os.getenv("EPOCHS", cfg.epochs))
 checkpoint_interval = max(1, epochs // 40)
 compare_epoch = max(1, epochs // 40)
-output_dir = os.getenv("OUTPUT_DIR", "Plots")
+output_dir = os.getenv("OUTPUT_DIR", "Plots/vanderpol")
 
 torch.manual_seed(cfg.seed)
 np.random.seed(cfg.seed)

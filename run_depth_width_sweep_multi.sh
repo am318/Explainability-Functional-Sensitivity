@@ -39,10 +39,20 @@ launch_job() {
 
   local stem
   stem=$(basename "$script" .py)
+  local dataset_dir
+  case "$stem" in
+    initial_experiment_2d_exp_test_sweep) dataset_dir="Plots/exp_test" ;;
+    initial_experiment_2d_morse_sweep) dataset_dir="Plots/morse" ;;
+    initial_experiment_2d_vanderpol_sweep) dataset_dir="Plots/vanderpol" ;;
+    *) dataset_dir="Plots/${stem}" ;;
+  esac
+
+  mkdir -p "$dataset_dir"
   local log_file="logs/${stem}_d${depth}_w${width}_gpu${gpu}.log"
 
   echo "Launching ${stem} depth=${depth} width=${width} on GPU ${gpu}"
   CUDA_VISIBLE_DEVICES="$gpu" \
+    OUTPUT_DIR="$dataset_dir" \
     N_HIDDEN="$depth" \
     HIDDEN_WIDTH="$width" \
     python "$script" >"$log_file" 2>&1 &

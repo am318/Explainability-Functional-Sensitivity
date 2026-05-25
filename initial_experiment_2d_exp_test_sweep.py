@@ -71,7 +71,8 @@ else:
 
 print(f"Using device: {device}")
 
-os.makedirs("Plots", exist_ok=True)
+output_dir = os.getenv("OUTPUT_DIR", "Plots/exp_test")
+os.makedirs(output_dir, exist_ok=True)
 
 
 # ============================================================
@@ -398,7 +399,7 @@ ax.set_title("True symmetric vector field")
 ax.set_xlabel("x")
 ax.set_ylabel("y")
 prettify_axes(ax)
-save_pub_figure(fig, f"Plots/True_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"{output_dir}/True_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 2. Learned vector field
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
@@ -423,7 +424,7 @@ ax.set_title("Learned symmetric vector field")
 ax.set_xlabel("x")
 ax.set_ylabel("y")
 prettify_axes(ax)
-save_pub_figure(fig, f"Plots/Learned_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"{output_dir}/Learned_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 3. Error heatmap
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
@@ -441,7 +442,7 @@ prettify_axes(ax)
 cbar = fig.colorbar(im_err, ax=ax, pad=0.02, fraction=0.046)
 cbar.ax.tick_params(direction="in", length=4, width=0.7)
 cbar.outline.set_linewidth(0.8)
-save_pub_figure(fig, f"Plots/Symmetric_Vector_Field_Error_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"{output_dir}/Symmetric_Vector_Field_Error_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 6. Eigenspectrum
 eig_final_erank = effective_rank(eig_final)
@@ -462,7 +463,7 @@ prettify_axes(ax)
 ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
 ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 beautify_legend(ax, loc="best")
-save_pub_figure(fig, f"Plots/Eigenspectrum_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"{output_dir}/Eigenspectrum_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 7. Loss curves
 fig, ax = plt.subplots(figsize=(7.4, 6.0), constrained_layout=False)
@@ -476,7 +477,7 @@ prettify_axes(ax)
 ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
 ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 beautify_legend(ax, loc="best")
-save_pub_figure(fig, f"Plots/Loss_Evolution_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"{output_dir}/Loss_Evolution_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 
 # ============================================================
@@ -544,7 +545,7 @@ ax3.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 beautify_legend(ax3, loc="best")
 save_pub_figure(
     fig3,
-    f"Plots/Sensitivity_Distribution_Initial_vs_Final_"
+    f"{output_dir}/Sensitivity_Distribution_Initial_vs_Final_"
     f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
 )
 
@@ -609,7 +610,7 @@ ax4.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 beautify_legend(ax4, loc="best")
 save_pub_figure(
     fig4,
-    f"Plots/Sensitivity_vs_Parameter_Magnitude_"
+    f"{output_dir}/Sensitivity_vs_Parameter_Magnitude_"
     f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
 )
 
@@ -671,7 +672,7 @@ cbar.outline.set_linewidth(0.8)
 
 save_pub_figure(
     fig,
-    f"Plots/Absolute_Sensitivity_Over_Training_"
+    f"{output_dir}/Absolute_Sensitivity_Over_Training_"
     f"{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf",
 )
 
@@ -751,7 +752,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Jacobian_PCA_Cumulative_Variance_"
+    f"{output_dir}/Jacobian_PCA_Cumulative_Variance_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -778,7 +779,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Jacobian_PCA_Projection_"
+    f"{output_dir}/Jacobian_PCA_Projection_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -814,7 +815,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Jacobian_Isomap_Embedding_"
+    f"{output_dir}/Jacobian_Isomap_Embedding_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -853,7 +854,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Jacobian_tSNE_Embedding_"
+    f"{output_dir}/Jacobian_tSNE_Embedding_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -894,7 +895,7 @@ if HAS_UMAP:
 
     save_pub_figure(
         fig,
-        f"Plots/Jacobian_UMAP_Embedding_"
+        f"{output_dir}/Jacobian_UMAP_Embedding_"
         f"{parameter_count(model)}.pdf",
     )
 
@@ -931,7 +932,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Normalized_Covariance_Eigenspectrum_"
+    f"{output_dir}/Normalized_Covariance_Eigenspectrum_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -984,7 +985,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/PCA_Distance_Preservation_"
+    f"{output_dir}/PCA_Distance_Preservation_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -1010,7 +1011,7 @@ prettify_axes(ax)
 
 save_pub_figure(
     fig,
-    f"Plots/Sensitivity_Rank_Spectrum_"
+    f"{output_dir}/Sensitivity_Rank_Spectrum_"
     f"{parameter_count(model)}.pdf",
 )
 
@@ -1048,7 +1049,7 @@ summary = {
     "largest_final_eigenvalue": float(eig_final[0].item()),
 }
 
-with open(f"Plots/final_summary_2d_symmetric_field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
+with open(f"{output_dir}/final_summary_2d_symmetric_field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print("\nFinal summary")
