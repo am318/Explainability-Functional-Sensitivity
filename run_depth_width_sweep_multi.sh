@@ -5,11 +5,11 @@ set -euo pipefail
 deep_scripts=(
   "initial_experiment_2d_morse_sweep.py"
   "initial_experiment_2d_exp_test_sweep.py"
-  "/initial_experiment_2d_vanderpol_sweep.py"
+  "initial_experiment_2d_vanderpol_sweep.py"
 )
 
 depths=(1 2 3 4 5 6)
-widths=(16 32 64 128 256 512)
+widths=(8 16 32 64 128 256 512)
 # GPU IDs as visible to CUDA. Example: (0 1 2 3)
 gpus=(0 1 2 3)
 
