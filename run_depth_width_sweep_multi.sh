@@ -56,10 +56,16 @@ launch_job() {
   stem=$(basename "$script" .py)
 
   local dataset_dir
+  # case "$stem" in
+  #   initial_experiment_2d_exp_test_sweep) dataset_dir="Plots/exp_test" ;;
+  #   initial_experiment_2d_morse_sweep)    dataset_dir="Plots/morse" ;;
+  #   initial_experiment_2d_vanderpol_sweep) dataset_dir="Plots/vanderpol" ;;
+  #   *) dataset_dir="Plots/${stem}" ;;
+  # esac
   case "$stem" in
-    initial_experiment_2d_exp_test_sweep) dataset_dir="Plots/exp_test" ;;
-    initial_experiment_2d_morse_sweep)    dataset_dir="Plots/morse" ;;
-    initial_experiment_2d_vanderpol_sweep) dataset_dir="Plots/vanderpol" ;;
+    initial_experiment_2d_exp_test_sweep) dataset_dir="L1Plots/exp_test" ;;
+    initial_experiment_2d_morse_sweep)    dataset_dir="L1Plots/morse" ;;
+    initial_experiment_2d_vanderpol_sweep) dataset_dir="L1Plots/vanderpol" ;;
     *) dataset_dir="Plots/${stem}" ;;
   esac
 

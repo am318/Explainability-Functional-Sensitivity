@@ -260,7 +260,16 @@ for epoch in range(cfg.epochs + 1):
 
     pred = model(x_train)
     task_loss = criterion(pred, y_train)
-    loss = task_loss
+    
+    # REMOVE?
+    l1_penalty = sum(
+                p.abs().sum()
+                for name, p in model.named_parameters()
+                if p.requires_grad and "bias" not in name
+            )
+    # REMOVE?
+
+    loss = task_loss + 1e-3*l1_penalty
 
     loss.backward()
     optimizer.step()
@@ -381,30 +390,30 @@ vmax = max(true_mag.max(), pred_mag.max())
 norm = plt.Normalize(vmin=0.0, vmax=vmax)
 cmap = "cividis"
 
-# 1. True vector field
-fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
-q = ax.quiver(
-    X_np[::skip, ::skip], V_np[::skip, ::skip],
-    true_np[::skip, ::skip, 0], true_np[::skip, ::skip, 1],
-    true_mag[::skip, ::skip],
-    angles="xy",
-    scale_units="xy",
-    scale=22.0,          # larger = shorter arrows
-    width=0.0022,
-    headwidth=3.0,
-    headlength=4.0,
-    headaxislength=3.5,
-    cmap=cmap,
-    norm=norm,
-    alpha=0.95,
-)
-cbar = fig.colorbar(q, ax=ax, pad=0.02)
-cbar.set_label(r"$\|f(x,v)\|$")
-ax.set_title("True Van der Pol vector field")
-ax.set_xlabel("x")
-ax.set_ylabel("v")
-prettify_axes(ax)
-save_pub_figure(fig, f"{output_dir}/True_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+# # 1. True vector field
+# fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
+# q = ax.quiver(
+#     X_np[::skip, ::skip], V_np[::skip, ::skip],
+#     true_np[::skip, ::skip, 0], true_np[::skip, ::skip, 1],
+#     true_mag[::skip, ::skip],
+#     angles="xy",
+#     scale_units="xy",
+#     scale=22.0,          # larger = shorter arrows
+#     width=0.0022,
+#     headwidth=3.0,
+#     headlength=4.0,
+#     headaxislength=3.5,
+#     cmap=cmap,
+#     norm=norm,
+#     alpha=0.95,
+# )
+# cbar = fig.colorbar(q, ax=ax, pad=0.02)
+# cbar.set_label(r"$\|f(x,v)\|$")
+# ax.set_title("True Van der Pol vector field")
+# ax.set_xlabel("x")
+# ax.set_ylabel("v")
+# prettify_axes(ax)
+# save_pub_figure(fig, f"{output_dir}/True_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 2. Learned vector field
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
