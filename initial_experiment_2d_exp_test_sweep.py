@@ -14,15 +14,22 @@ import torch.optim as optim
 
 from utilities import * 
 
+def _env_int(name, default):
+    return int(os.environ.get(name, default))
+
+
+def _env_float(name, default):
+    return float(os.environ.get(name, default))
+
 # ============================================================
 # Configuration
 # ============================================================
 
 @dataclass
 class Config:
-    seed: int = 0
+    seed: int = _env_int("SEED", 0)
 
-    # Training samples are random points in phase space: input = [x, v].
+    # Training samples are random points in phase space: input = [x, y].
     n_train: int = 2**12
     n_test: int = 2**10
 
@@ -30,25 +37,24 @@ class Config:
     # # a fixed subset for diagnostics rather than the full training set.
     # n_sensitivity: int = 128
 
-    n_hidden: int = 2
-    hidden_width: int = 64
+    n_hidden: int = _env_int("N_HIDDEN", 2)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 32)
     lr: float = 1e-2
-    epochs: int = 100000
+    epochs: int = _env_int("EPOCHS", 100000)
     checkpoint_interval: int = epochs // 40
     topk_frac: float = 0.10
     compare_epoch: int = epochs // 40
 
-    # Van der Pol oscillator parameter and phase-space domain.
-    mu: float = 3.0
-    x_min: float = -3.0
-    x_max: float = 3.0
-    v_min: float = -5.0
-    v_max: float = 5.0
+    # Symmetric target field and sampling domain.
+    x_min: float = -2.0
+    x_max: float = 2.0
+    v_min: float = -2.0
+    v_max: float = 2.0
+
+    field_scale: float = 1.0e1
 
     noise_multiplier: float = 5e-2
     plot_grid_size: int = 45
-
-    l1_lambda: float = 1e-3
 
 
 cfg = Config()
@@ -56,7 +62,9 @@ cfg = Config()
 torch.manual_seed(cfg.seed)
 np.random.seed(cfg.seed)
 
-if torch.backends.mps.is_available():
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
     device = torch.device("mps")
 else:
     device = torch.device("cpu")
@@ -67,33 +75,36 @@ os.makedirs("Plots", exist_ok=True)
 
 
 # ============================================================
-# Dataset: learn the 2D Van der Pol vector field
+# Dataset: learn a physically symmetric 2D vector field
 # ============================================================
-# Input:  state = [x, v]
-# Target: f(x, v) = [dx/dt, dv/dt]
-#         dx/dt = v
-#         dv/dt = mu * (1 - x^2) * v - x
+# Input:  state = [x, y]
+# Target: F(x, y) = [-2x exp(-x^2 - y^2), 2y exp(-x^2 - y^2)]
+# This is the gradient of phi(x, y) = exp(-x^2 + y^2).
+#
 
-def vanderpol_vector_field(state, mu=3.0):
+def symmetric_vector_field(state, field_scale=1.0):
     x = state[..., 0:1]
-    v = state[..., 1:2]
-    dxdt = v
-    dvdt = mu * (1.0 - x ** 2) * v - x
-    return torch.cat([dxdt, dvdt], dim=-1)
+    y = state[..., 1:2]
+
+    phi = torch.exp((-x ** 2) + (-y ** 2))
+    dfdx = -2.0 * field_scale * x * phi
+    dfdy = 2.0 * field_scale * y * phi
+
+    return torch.cat([dfdx, dfdy], dim=-1)
 
 
-def sample_phase_space(n):
-    x = cfg.x_min + (cfg.x_max - cfg.x_min) * torch.rand(n, 1, dtype=torch.float32)
-    v = cfg.v_min + (cfg.v_max - cfg.v_min) * torch.rand(n, 1, dtype=torch.float32)
-    return torch.cat([x, v], dim=-1)
+def sample_phase_space(n, x_min=-3.0, x_max=3.0, v_min=-3.0, v_max=3.0):
+    x = x_min + (x_max - x_min) * torch.rand(n, 1, dtype=torch.float32)
+    y = v_min + (v_max - v_min) * torch.rand(n, 1, dtype=torch.float32)
+    return torch.cat([x, y], dim=-1)
 
 
 x_train = sample_phase_space(cfg.n_train).to(device)
-y_train_clean = vanderpol_vector_field(x_train, mu=cfg.mu)
+y_train_clean = symmetric_vector_field(x_train, field_scale=cfg.field_scale)
 y_train = y_train_clean + cfg.noise_multiplier * torch.randn_like(y_train_clean)
 
 x_test = sample_phase_space(cfg.n_test).to(device)
-y_test_clean = vanderpol_vector_field(x_test, mu=cfg.mu)
+y_test_clean = symmetric_vector_field(x_test, field_scale=cfg.field_scale)
 y_test = y_test_clean + cfg.noise_multiplier * torch.randn_like(y_test_clean)
 
 # # Fixed subset for sensitivity analysis.
@@ -150,8 +161,8 @@ class SmallMLP(nn.Module):
         return self.net(x)
 
 
-x_min = torch.tensor([0.0, -1.0], device=device)
-x_max = torch.tensor([1.0,  1.0], device=device)
+x_min = torch.tensor([cfg.x_min, cfg.v_min], device=device)
+x_max = torch.tensor([cfg.x_max, cfg.v_max], device=device)
 
 model = SmallMLP(
     cfg.hidden_width,
@@ -187,21 +198,24 @@ init_topk_idx = topk_indices(S_init, cfg.topk_frac)
 # Optimisation
 # ============================================================
 
-def physics_informed_loss(pred, state, mu):
-    """Residual loss for the Van der Pol vector field.
+def physics_informed_loss(pred, state, field_scale):
+    """Residual loss for the symmetric gradient-like vector field.
 
-    The model predicts [dx/dt, dv/dt]. The physics constraint is
-        dx/dt = v
-        dv/dt = mu * (1 - x^2) * v - x
+    The model predicts [F_x, F_y] for
+        F(x, y) = [-2x exp(-x^2 + y^2), 2y exp(-x^2 + y^2)]
     so the loss penalizes the residual of those equations directly.
     """
     x = state[..., 0:1]
-    v = state[..., 1:2]
+    y = state[..., 1:2]
 
-    residual_dx = pred[..., 0:1] - v
-    residual_dv = pred[..., 1:2] - (mu * (1.0 - x ** 2) * v - x)
+    phi = torch.exp((-x ** 2) + (y ** 2))
+    target_x = -2.0 * field_scale * x * phi
+    target_y = 2.0 * field_scale * y * phi
 
-    return (residual_dx.pow(2).mean() + residual_dv.pow(2).mean())
+    residual_x = pred[..., 0:1] - target_x
+    residual_y = pred[..., 1:2] - target_y
+
+    return (residual_x.pow(2).mean() + residual_y.pow(2).mean())
 
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
@@ -336,17 +350,17 @@ ACCENT_PURPLE = "#8172B3"
 ACCENT_GRAY = "#6C757D"
 
 grid_x = torch.linspace(cfg.x_min, cfg.x_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
-grid_v = torch.linspace(cfg.v_min, cfg.v_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
-X, V = torch.meshgrid(grid_x, grid_v, indexing="xy")
-grid_state = torch.stack([X.reshape(-1), V.reshape(-1)], dim=-1)
+grid_y = torch.linspace(cfg.v_min, cfg.v_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
+X, Y = torch.meshgrid(grid_x, grid_y, indexing="xy")
+grid_state = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=-1)
 
 with torch.no_grad():
-    true_field = vanderpol_vector_field(grid_state, mu=cfg.mu)
+    true_field = symmetric_vector_field(grid_state, field_scale=cfg.field_scale)
     pred_field = model(grid_state)
     field_error = torch.linalg.norm(pred_field - true_field, dim=-1)
 
 X_np = X.detach().cpu().numpy()
-V_np = V.detach().cpu().numpy()
+Y_np = Y.detach().cpu().numpy()
 true_np = true_field.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot_grid_size, 2)
 pred_np = pred_field.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot_grid_size, 2)
 err_np = field_error.detach().cpu().numpy().reshape(cfg.plot_grid_size, cfg.plot_grid_size)
@@ -364,7 +378,7 @@ cmap = "cividis"
 # 1. True vector field
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
 q = ax.quiver(
-    X_np[::skip, ::skip], V_np[::skip, ::skip],
+    X_np[::skip, ::skip], Y_np[::skip, ::skip],
     true_np[::skip, ::skip, 0], true_np[::skip, ::skip, 1],
     true_mag[::skip, ::skip],
     angles="xy",
@@ -379,17 +393,17 @@ q = ax.quiver(
     alpha=0.95,
 )
 cbar = fig.colorbar(q, ax=ax, pad=0.02)
-cbar.set_label(r"$\|f(x,v)\|$")
-ax.set_title("True Van der Pol vector field")
+cbar.set_label(r"$\|f(x,y)\|$")
+ax.set_title("True symmetric vector field")
 ax.set_xlabel("x")
-ax.set_ylabel("v")
+ax.set_ylabel("y")
 prettify_axes(ax)
-save_pub_figure(fig, f"Plots/True_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"Plots/True_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 2. Learned vector field
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
 q = ax.quiver(
-    X_np[::skip, ::skip], V_np[::skip, ::skip],
+    X_np[::skip, ::skip], Y_np[::skip, ::skip],
     pred_np[::skip, ::skip, 0], pred_np[::skip, ::skip, 1],
     pred_mag[::skip, ::skip],
     angles="xy",
@@ -404,12 +418,12 @@ q = ax.quiver(
     alpha=0.95,
 )
 cbar = fig.colorbar(q, ax=ax, pad=0.02)
-cbar.set_label(r"$\|f_\theta(x,v)\|$")
-ax.set_title("Learned vector field")
+cbar.set_label(r"$\|f_\theta(x,y)\|$")
+ax.set_title("Learned symmetric vector field")
 ax.set_xlabel("x")
-ax.set_ylabel("v")
+ax.set_ylabel("y")
 prettify_axes(ax)
-save_pub_figure(fig, f"Plots/Learned_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"Plots/Learned_Symmetric_Vector_Field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 3. Error heatmap
 fig, ax = plt.subplots(figsize=(7.2, 6.0), constrained_layout=False)
@@ -422,12 +436,12 @@ im_err = ax.imshow(
 )
 ax.set_title("Vector-field error norm")
 ax.set_xlabel("x")
-ax.set_ylabel("v")
+ax.set_ylabel("y")
 prettify_axes(ax)
 cbar = fig.colorbar(im_err, ax=ax, pad=0.02, fraction=0.046)
 cbar.ax.tick_params(direction="in", length=4, width=0.7)
 cbar.outline.set_linewidth(0.8)
-save_pub_figure(fig, f"Plots/Vector_Field_Error_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
+save_pub_figure(fig, f"Plots/Symmetric_Vector_Field_Error_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.pdf")
 
 # 6. Eigenspectrum
 eig_final_erank = effective_rank(eig_final)
@@ -662,6 +676,350 @@ save_pub_figure(
 )
 
 
+
+
+
+
+
+# ============================================================
+# Low-dimensional structure analysis
+# ============================================================
+
+from sklearn.decomposition import PCA
+from sklearn.manifold import Isomap, TSNE
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import StandardScaler
+
+try:
+    import umap
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+
+
+# ------------------------------------------------------------
+# Prepare data
+# ------------------------------------------------------------
+
+# Jacobian:
+# shape = [n_samples * output_dim, n_parameters]
+J_np = J_final.detach().cpu().numpy()
+
+# Covariance
+C_np = C_final.detach().cpu().numpy()
+
+# Sensitivity vector
+S_np = S_final.detach().cpu().numpy()
+
+# Standardize Jacobian rows
+J_scaled = StandardScaler().fit_transform(J_np)
+
+print("\n")
+print("===================================================")
+print("Low-dimensional structure diagnostics")
+print("===================================================")
+
+print(f"Jacobian shape: {J_scaled.shape}")
+print(f"Covariance shape: {C_np.shape}")
+print(f"Sensitivity shape: {S_np.shape}")
+
+
+# ============================================================
+# PCA on Jacobian rows
+# ============================================================
+
+pca = PCA(n_components=min(64, J_scaled.shape[1]))
+J_pca = pca.fit_transform(J_scaled)
+
+explained = pca.explained_variance_ratio_
+cum_explained = np.cumsum(explained)
+
+effective_dim_95 = np.searchsorted(cum_explained, 0.95) + 1
+
+print(f"\nPCA effective dimension (95% variance): {effective_dim_95}")
+
+fig, ax = plt.subplots(figsize=(7.2, 5.5))
+
+ax.plot(cum_explained, linewidth=2.0)
+ax.axhline(0.95, linestyle="--")
+
+ax.set_title("Jacobian PCA cumulative explained variance")
+ax.set_xlabel("Principal component")
+ax.set_ylabel("Cumulative explained variance")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_PCA_Cumulative_Variance_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ------------------------------------------------------------
+# PCA scatter
+# ------------------------------------------------------------
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_pca[:, 0],
+    J_pca[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian PCA projection")
+ax.set_xlabel("PC1")
+ax.set_ylabel("PC2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_PCA_Projection_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Isomap
+# ============================================================
+
+print("Running Isomap...")
+
+isomap = Isomap(
+    n_components=2,
+    n_neighbors=20,
+)
+
+J_iso = isomap.fit_transform(J_scaled)
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_iso[:, 0],
+    J_iso[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian Isomap embedding")
+ax.set_xlabel("Component 1")
+ax.set_ylabel("Component 2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_Isomap_Embedding_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# t-SNE
+# ============================================================
+
+print("Running t-SNE...")
+
+tsne = TSNE(
+    n_components=2,
+    perplexity=30,
+    init="pca",
+    learning_rate="auto",
+    random_state=cfg.seed,
+)
+
+J_tsne = tsne.fit_transform(J_scaled)
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_tsne[:, 0],
+    J_tsne[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian t-SNE embedding")
+ax.set_xlabel("t-SNE 1")
+ax.set_ylabel("t-SNE 2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_tSNE_Embedding_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# UMAP
+# ============================================================
+
+if HAS_UMAP:
+
+    print("Running UMAP...")
+
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=25,
+        min_dist=0.1,
+        metric="euclidean",
+        random_state=cfg.seed,
+    )
+
+    J_umap = reducer.fit_transform(J_scaled)
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+    ax.scatter(
+        J_umap[:, 0],
+        J_umap[:, 1],
+        s=10,
+        alpha=0.55,
+        rasterized=True,
+    )
+
+    ax.set_title("Jacobian UMAP embedding")
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+
+    prettify_axes(ax)
+
+    save_pub_figure(
+        fig,
+        f"Plots/Jacobian_UMAP_Embedding_"
+        f"{parameter_count(model)}.pdf",
+    )
+
+
+# ============================================================
+# Covariance eigenspectrum diagnostics
+# ============================================================
+
+eigvals = eig_final.detach().cpu().numpy()
+
+eigvals = eigvals[eigvals > 1e-14]
+
+participation_ratio = (
+    (eigvals.sum() ** 2) /
+    (np.square(eigvals).sum())
+)
+
+print(f"\nParticipation ratio dimension: {participation_ratio:.3f}")
+
+fig, ax = plt.subplots(figsize=(7.0, 5.5))
+
+ax.plot(
+    eigvals / eigvals.max(),
+    linewidth=2.0,
+)
+
+ax.set_yscale("log")
+
+ax.set_title("Normalized covariance eigenspectrum")
+ax.set_xlabel("Eigenvalue index")
+ax.set_ylabel(r"$\lambda_i / \lambda_{\max}$")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Normalized_Covariance_Eigenspectrum_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Distance preservation diagnostics
+# ============================================================
+
+print("Computing pairwise distance diagnostics...")
+
+subset_size = min(512, J_scaled.shape[0])
+
+subset_idx = np.random.choice(
+    J_scaled.shape[0],
+    subset_size,
+    replace=False,
+)
+
+X_sub = J_scaled[subset_idx]
+P_sub = J_pca[subset_idx]
+
+D_high = pairwise_distances(X_sub)
+D_low = pairwise_distances(P_sub)
+
+corr = np.corrcoef(
+    D_high.ravel(),
+    D_low.ravel(),
+)[0, 1]
+
+print(f"Distance correlation (PCA): {corr:.4f}")
+
+fig, ax = plt.subplots(figsize=(6.2, 6.0))
+
+ax.scatter(
+    D_high.ravel(),
+    D_low.ravel(),
+    s=1,
+    alpha=0.15,
+    rasterized=True,
+)
+
+ax.set_title(
+    f"PCA distance preservation\ncorr={corr:.3f}"
+)
+
+ax.set_xlabel("High-dimensional distance")
+ax.set_ylabel("Low-dimensional distance")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/PCA_Distance_Preservation_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Sensitivity ordering structure
+# ============================================================
+
+sorted_sens = np.sort(S_np)[::-1]
+
+fig, ax = plt.subplots(figsize=(7.0, 5.5))
+
+ax.plot(sorted_sens)
+
+ax.set_xscale("log")
+ax.set_yscale("log")
+
+ax.set_title("Sorted sensitivity spectrum")
+ax.set_xlabel("Parameter rank")
+ax.set_ylabel("Sensitivity")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Sensitivity_Rank_Spectrum_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+
+
+
+
+
 # ============================================================
 # Final summary
 # ============================================================
@@ -673,8 +1031,8 @@ with torch.no_grad():
     max_grid_error = float(field_error.max().detach().cpu().item())
 
 summary = {
-    "target": "2D Van der Pol vector field f(x, v) = [v, mu * (1 - x^2) * v - x]",
-    "mu": cfg.mu,
+    "target": "2D symmetric vector field F(x, y) = [-2x exp(-x^2 + y^2), 2y exp(-x^2 + y^2)]",
+    "field_scale": cfg.field_scale,
     "parameter_count": parameter_count(model),
     "final_train_mse_clean": final_train_mse,
     "final_test_mse_clean": final_test_mse,
@@ -690,7 +1048,7 @@ summary = {
     "largest_final_eigenvalue": float(eig_final[0].item()),
 }
 
-with open(f"Plots/final_summary_2d_vanderpol_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
+with open(f"Plots/final_summary_2d_symmetric_field_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print("\nFinal summary")

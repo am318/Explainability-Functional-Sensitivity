@@ -31,25 +31,24 @@ class Config:
     # n_sensitivity: int = 128
 
     n_hidden: int = 2
-    hidden_width: int = 64
+    hidden_width: int = 8
     lr: float = 1e-2
     epochs: int = 100000
     checkpoint_interval: int = epochs // 40
     topk_frac: float = 0.10
     compare_epoch: int = epochs // 40
 
-    # Morse potential parameters
-    x_min: float = -2.0
-    x_max: float = 4.0
-    v_min: float = -3.0
-    v_max: float = 3.0
-
-    D_e: float = 1.0
-    a: float = 1.0
-    x_e: float = 0.0
+    # Van der Pol oscillator parameter and phase-space domain.
+    mu: float = 3.0
+    x_min: float = -3.0
+    x_max: float = 3.0
+    v_min: float = -5.0
+    v_max: float = 5.0
 
     noise_multiplier: float = 5e-2
     plot_grid_size: int = 45
+
+    l1_lambda: float = 1e-3
 
 
 cfg = Config()
@@ -68,42 +67,33 @@ os.makedirs("Plots", exist_ok=True)
 
 
 # ============================================================
-# Dataset: learn the 2D Morse potential dynamics
+# Dataset: learn the 2D Van der Pol vector field
 # ============================================================
 # Input:  state = [x, v]
 # Target: f(x, v) = [dx/dt, dv/dt]
 #         dx/dt = v
-#         dv/dt = -dV/dx
-#
-# Morse potential:
-#   V(x) = D_e * (1 - exp(-a * (x - x_e)))^2
-#
-# Force:
-#   -dV/dx = 2 * a * D_e * (1 - exp(-a * (x - x_e))) * exp(-a * (x - x_e))
+#         dv/dt = mu * (1 - x^2) * v - x
 
-def morse_vector_field(state, D_e=1.0, a=1.0, x_e=0.0):
+def vanderpol_vector_field(state, mu=3.0):
     x = state[..., 0:1]
     v = state[..., 1:2]
-
-    exp_term = torch.exp(-a * (x - x_e))
     dxdt = v
-    dvdt = 2.0 * a * D_e * (1.0 - exp_term) * exp_term
-
+    dvdt = mu * (1.0 - x ** 2) * v - x
     return torch.cat([dxdt, dvdt], dim=-1)
 
 
-def sample_phase_space(n, x_min=-2.0, x_max=4.0, v_min=-3.0, v_max=3.0):
-    x = x_min + (x_max - x_min) * torch.rand(n, 1, dtype=torch.float32)
-    v = v_min + (v_max - v_min) * torch.rand(n, 1, dtype=torch.float32)
+def sample_phase_space(n):
+    x = cfg.x_min + (cfg.x_max - cfg.x_min) * torch.rand(n, 1, dtype=torch.float32)
+    v = cfg.v_min + (cfg.v_max - cfg.v_min) * torch.rand(n, 1, dtype=torch.float32)
     return torch.cat([x, v], dim=-1)
 
 
 x_train = sample_phase_space(cfg.n_train).to(device)
-y_train_clean = morse_vector_field(x_train, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
+y_train_clean = vanderpol_vector_field(x_train, mu=cfg.mu)
 y_train = y_train_clean + cfg.noise_multiplier * torch.randn_like(y_train_clean)
 
 x_test = sample_phase_space(cfg.n_test).to(device)
-y_test_clean = morse_vector_field(x_test, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
+y_test_clean = vanderpol_vector_field(x_test, mu=cfg.mu)
 y_test = y_test_clean + cfg.noise_multiplier * torch.randn_like(y_test_clean)
 
 # # Fixed subset for sensitivity analysis.
@@ -351,7 +341,7 @@ X, V = torch.meshgrid(grid_x, grid_v, indexing="xy")
 grid_state = torch.stack([X.reshape(-1), V.reshape(-1)], dim=-1)
 
 with torch.no_grad():
-    true_field = morse_vector_field(grid_state, D_e=cfg.D_e, a=cfg.a, x_e=cfg.x_e)
+    true_field = vanderpol_vector_field(grid_state, mu=cfg.mu)
     pred_field = model(grid_state)
     field_error = torch.linalg.norm(pred_field - true_field, dim=-1)
 
@@ -672,6 +662,365 @@ save_pub_figure(
 )
 
 
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+# Low-dimensional structure analysis
+# ============================================================
+
+from sklearn.decomposition import PCA
+from sklearn.manifold import Isomap, TSNE
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import StandardScaler
+
+try:
+    import umap
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+
+
+# ------------------------------------------------------------
+# Prepare data
+# ------------------------------------------------------------
+
+# Jacobian:
+# shape = [n_samples * output_dim, n_parameters]
+J_np = J_final.detach().cpu().numpy()
+
+# Covariance
+C_np = C_final.detach().cpu().numpy()
+
+# Sensitivity vector
+S_np = S_final.detach().cpu().numpy()
+
+# Standardize Jacobian rows
+J_scaled = StandardScaler().fit_transform(J_np)
+
+print("\n")
+print("===================================================")
+print("Low-dimensional structure diagnostics")
+print("===================================================")
+
+print(f"Jacobian shape: {J_scaled.shape}")
+print(f"Covariance shape: {C_np.shape}")
+print(f"Sensitivity shape: {S_np.shape}")
+
+
+# ============================================================
+# PCA on Jacobian rows
+# ============================================================
+
+pca = PCA(n_components=min(64, J_scaled.shape[1]))
+J_pca = pca.fit_transform(J_scaled)
+
+explained = pca.explained_variance_ratio_
+cum_explained = np.cumsum(explained)
+
+effective_dim_95 = np.searchsorted(cum_explained, 0.95) + 1
+
+print(f"\nPCA effective dimension (95% variance): {effective_dim_95}")
+
+fig, ax = plt.subplots(figsize=(7.2, 5.5))
+
+ax.plot(cum_explained, linewidth=2.0)
+ax.axhline(0.95, linestyle="--")
+
+ax.set_title("Jacobian PCA cumulative explained variance")
+ax.set_xlabel("Principal component")
+ax.set_ylabel("Cumulative explained variance")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_PCA_Cumulative_Variance_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ------------------------------------------------------------
+# PCA scatter
+# ------------------------------------------------------------
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_pca[:, 0],
+    J_pca[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian PCA projection")
+ax.set_xlabel("PC1")
+ax.set_ylabel("PC2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_PCA_Projection_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Isomap
+# ============================================================
+
+print("Running Isomap...")
+
+isomap = Isomap(
+    n_components=2,
+    n_neighbors=20,
+)
+
+J_iso = isomap.fit_transform(J_scaled)
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_iso[:, 0],
+    J_iso[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian Isomap embedding")
+ax.set_xlabel("Component 1")
+ax.set_ylabel("Component 2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_Isomap_Embedding_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# t-SNE
+# ============================================================
+
+print("Running t-SNE...")
+
+tsne = TSNE(
+    n_components=2,
+    perplexity=30,
+    init="pca",
+    learning_rate="auto",
+    random_state=cfg.seed,
+)
+
+J_tsne = tsne.fit_transform(J_scaled)
+
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+ax.scatter(
+    J_tsne[:, 0],
+    J_tsne[:, 1],
+    s=10,
+    alpha=0.55,
+    rasterized=True,
+)
+
+ax.set_title("Jacobian t-SNE embedding")
+ax.set_xlabel("t-SNE 1")
+ax.set_ylabel("t-SNE 2")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Jacobian_tSNE_Embedding_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# UMAP
+# ============================================================
+
+if HAS_UMAP:
+
+    print("Running UMAP...")
+
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=25,
+        min_dist=0.1,
+        metric="euclidean",
+        random_state=cfg.seed,
+    )
+
+    J_umap = reducer.fit_transform(J_scaled)
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.0))
+
+    ax.scatter(
+        J_umap[:, 0],
+        J_umap[:, 1],
+        s=10,
+        alpha=0.55,
+        rasterized=True,
+    )
+
+    ax.set_title("Jacobian UMAP embedding")
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+
+    prettify_axes(ax)
+
+    save_pub_figure(
+        fig,
+        f"Plots/Jacobian_UMAP_Embedding_"
+        f"{parameter_count(model)}.pdf",
+    )
+
+
+# ============================================================
+# Covariance eigenspectrum diagnostics
+# ============================================================
+
+eigvals = eig_final.detach().cpu().numpy()
+
+eigvals = eigvals[eigvals > 1e-14]
+
+participation_ratio = (
+    (eigvals.sum() ** 2) /
+    (np.square(eigvals).sum())
+)
+
+print(f"\nParticipation ratio dimension: {participation_ratio:.3f}")
+
+fig, ax = plt.subplots(figsize=(7.0, 5.5))
+
+ax.plot(
+    eigvals / eigvals.max(),
+    linewidth=2.0,
+)
+
+ax.set_yscale("log")
+
+ax.set_title("Normalized covariance eigenspectrum")
+ax.set_xlabel("Eigenvalue index")
+ax.set_ylabel(r"$\lambda_i / \lambda_{\max}$")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Normalized_Covariance_Eigenspectrum_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Distance preservation diagnostics
+# ============================================================
+
+print("Computing pairwise distance diagnostics...")
+
+subset_size = min(512, J_scaled.shape[0])
+
+subset_idx = np.random.choice(
+    J_scaled.shape[0],
+    subset_size,
+    replace=False,
+)
+
+X_sub = J_scaled[subset_idx]
+P_sub = J_pca[subset_idx]
+
+D_high = pairwise_distances(X_sub)
+D_low = pairwise_distances(P_sub)
+
+corr = np.corrcoef(
+    D_high.ravel(),
+    D_low.ravel(),
+)[0, 1]
+
+print(f"Distance correlation (PCA): {corr:.4f}")
+
+fig, ax = plt.subplots(figsize=(6.2, 6.0))
+
+ax.scatter(
+    D_high.ravel(),
+    D_low.ravel(),
+    s=1,
+    alpha=0.15,
+    rasterized=True,
+)
+
+ax.set_title(
+    f"PCA distance preservation\ncorr={corr:.3f}"
+)
+
+ax.set_xlabel("High-dimensional distance")
+ax.set_ylabel("Low-dimensional distance")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/PCA_Distance_Preservation_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+# ============================================================
+# Sensitivity ordering structure
+# ============================================================
+
+sorted_sens = np.sort(S_np)[::-1]
+
+fig, ax = plt.subplots(figsize=(7.0, 5.5))
+
+ax.plot(sorted_sens)
+
+ax.set_xscale("log")
+ax.set_yscale("log")
+
+ax.set_title("Sorted sensitivity spectrum")
+ax.set_xlabel("Parameter rank")
+ax.set_ylabel("Sensitivity")
+
+prettify_axes(ax)
+
+save_pub_figure(
+    fig,
+    f"Plots/Sensitivity_Rank_Spectrum_"
+    f"{parameter_count(model)}.pdf",
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ============================================================
 # Final summary
 # ============================================================
@@ -683,10 +1032,8 @@ with torch.no_grad():
     max_grid_error = float(field_error.max().detach().cpu().item())
 
 summary = {
-    "target": "2D Morse potential vector field f(x, v) = [v, 2 * a * D_e * (1 - exp(-a * (x - x_e))) * exp(-a * (x - x_e))]",
-    "morse_D_e": cfg.D_e,
-    "morse_a": cfg.a,
-    "morse_x_e": cfg.x_e,
+    "target": "2D Van der Pol vector field f(x, v) = [v, mu * (1 - x^2) * v - x]",
+    "mu": cfg.mu,
     "parameter_count": parameter_count(model),
     "final_train_mse_clean": final_train_mse,
     "final_test_mse_clean": final_test_mse,
