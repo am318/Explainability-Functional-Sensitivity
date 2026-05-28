@@ -38,12 +38,12 @@ class Config:
     # n_sensitivity: int = 128
 
     n_hidden: int = _env_int("N_HIDDEN", 2)
-    hidden_width: int = _env_int("HIDDEN_WIDTH", 32)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 15)
     lr: float = 1e-2
-    epochs: int = _env_int("EPOCHS", 100000)
-    checkpoint_interval: int = epochs // 40
+    epochs: int = _env_int("EPOCHS", 50000)
+    checkpoint_interval: int = epochs // 20 # 40
     topk_frac: float = 0.10
-    compare_epoch: int = epochs // 40
+    compare_epoch: int = epochs // 20 # 40
 
     # Symmetric target field and sampling domain.
     x_min: float = -2.0
@@ -71,11 +71,10 @@ else:
 
 print(f"Using device: {device}")
 
-output_dir = os.getenv("OUTPUT_DIR", "Plots/exp_test")
+output_dir = os.getenv("OUTPUT_DIR", "Plots/sin")
 os.makedirs(output_dir, exist_ok=True)
 
 
-# ============================================================
 # ============================================================
 # Dataset: learn the scalar parabola y = x^3
 # ============================================================
@@ -85,8 +84,8 @@ os.makedirs(output_dir, exist_ok=True)
 power = 3
 
 def parabola_target(x, field_scale=1.0):
-    return field_scale * x.pow(power)
-    # return torch.tan(x)
+    # return field_scale * x.pow(power)
+    return torch.sin(x)
 
 def sample_x(n, x_min=-1.0, x_max=1.0):
     return x_min + (x_max - x_min) * torch.rand(n, 1, dtype=torch.float32)
@@ -106,6 +105,14 @@ y_test = y_test_clean + cfg.noise_multiplier * torch.randn_like(y_test_clean)
 
 # Full training set for exact sensitivity analysis.
 x_sens = x_train
+
+
+# ============================================================
+# Model
+# ============================================================
+
+
+
 class SmallMLP(nn.Module):
     def __init__(self, width, x_min, x_max, input_dim=1, output_dim=1):
         super().__init__()
@@ -633,24 +640,29 @@ C_np = C_final.detach().cpu().numpy()
 # Sensitivity vector
 S_np = S_final.detach().cpu().numpy()
 
-# Standardize Jacobian rows
-J_scaled = StandardScaler().fit_transform(J_np)
+# Parameter-as-observation Jacobian representation.
+# Rows are parameters; columns are dataset/output directions.
+# This makes all downstream PCA/manifold/distance analyses parameter-level,
+# not dataset-point-level.
+J_param = J_np.T  # shape: [n_parameters, n_samples * output_dim]
+J_scaled = StandardScaler().fit_transform(J_param)
 
 print("\n")
 print("===================================================")
 print("Low-dimensional structure diagnostics")
 print("===================================================")
 
-print(f"Jacobian shape: {J_scaled.shape}")
+print(f"Raw Jacobian shape [sample-output, parameter]: {J_np.shape}")
+print(f"Parameter-analysis matrix shape [parameter, sample-output]: {J_scaled.shape}")
 print(f"Covariance shape: {C_np.shape}")
 print(f"Sensitivity shape: {S_np.shape}")
 
 
 # ============================================================
-# PCA on Jacobian rows
+# PCA on Jacobian parameter rows
 # ============================================================
 
-n_pca_components = min(max(64, power), J_scaled.shape[1])
+n_pca_components = min(max(64, power), J_scaled.shape[0], J_scaled.shape[1])
 
 pca = PCA(n_components=n_pca_components)
 J_pca = pca.fit_transform(J_scaled)
@@ -664,7 +676,7 @@ print(f"\nPCA effective dimension (95% variance): {effective_dim_95}")
 fig, ax = plt.subplots(figsize=(7.2, 5.5))
 ax.plot(cum_explained, linewidth=2.0)
 ax.axhline(0.95, linestyle="--")
-ax.set_title("Jacobian PCA cumulative explained variance")
+ax.set_title("Parameter-Jacobian PCA cumulative explained variance")
 ax.set_xlabel("Principal component")
 ax.set_ylabel("Cumulative explained variance")
 prettify_axes(ax)
@@ -689,7 +701,7 @@ if dim == 2:
         alpha=0.55,
         rasterized=True,
     )
-    ax.set_title("Jacobian PCA projection")
+    ax.set_title("Parameter-Jacobian PCA projection")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     prettify_axes(ax)
@@ -705,7 +717,7 @@ else:
         alpha=0.55,
         depthshade=False,
     )
-    ax.set_title("Jacobian PCA projection")
+    ax.set_title("Parameter-Jacobian PCA projection")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     ax.set_zlabel("PC3")
@@ -728,7 +740,7 @@ print("Running Isomap...")
 
 isomap = Isomap(
     n_components=2,
-    n_neighbors=20,
+    n_neighbors=min(20, max(1, J_scaled.shape[0] - 1)),
 )
 
 J_iso = isomap.fit_transform(J_scaled)
@@ -743,7 +755,7 @@ ax.scatter(
     rasterized=True,
 )
 
-ax.set_title("Jacobian Isomap embedding")
+ax.set_title("Parameter-Jacobian Isomap embedding")
 ax.set_xlabel("Component 1")
 ax.set_ylabel("Component 2")
 
@@ -764,7 +776,7 @@ print("Running t-SNE...")
 
 tsne = TSNE(
     n_components=2,
-    perplexity=30,
+    perplexity=min(30, max(1, (J_scaled.shape[0] - 1) // 3)),
     init="pca",
     learning_rate="auto",
     random_state=cfg.seed,
@@ -782,7 +794,7 @@ ax.scatter(
     rasterized=True,
 )
 
-ax.set_title("Jacobian t-SNE embedding")
+ax.set_title("Parameter-Jacobian t-SNE embedding")
 ax.set_xlabel("t-SNE 1")
 ax.set_ylabel("t-SNE 2")
 
@@ -805,7 +817,7 @@ if HAS_UMAP:
 
     reducer = umap.UMAP(
         n_components=2,
-        n_neighbors=25,
+        n_neighbors=min(25, max(2, J_scaled.shape[0] - 1)),
         min_dist=0.1,
         metric="euclidean",
         random_state=cfg.seed,
@@ -823,7 +835,7 @@ if HAS_UMAP:
         rasterized=True,
     )
 
-    ax.set_title("Jacobian UMAP embedding")
+    ax.set_title("Parameter-Jacobian UMAP embedding")
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
 
@@ -911,11 +923,11 @@ ax.scatter(
 )
 
 ax.set_title(
-    f"PCA distance preservation\ncorr={corr:.3f}"
+    f"Parameter PCA distance preservation\ncorr={corr:.3f}"
 )
 
-ax.set_xlabel("High-dimensional distance")
-ax.set_ylabel("Low-dimensional distance")
+ax.set_xlabel("High-dimensional parameter-signature distance")
+ax.set_ylabel("Low-dimensional parameter-embedding distance")
 
 prettify_axes(ax)
 
@@ -1217,24 +1229,29 @@ C_np = C_final.detach().cpu().numpy()
 # Sensitivity vector
 S_np = S_final.detach().cpu().numpy()
 
-# Standardize Jacobian rows
-J_scaled = StandardScaler().fit_transform(J_np)
+# Parameter-as-observation Jacobian representation.
+# Rows are parameters; columns are dataset/output directions.
+# This makes all downstream PCA/manifold/distance analyses parameter-level,
+# not dataset-point-level.
+J_param = J_np.T  # shape: [n_parameters, n_samples * output_dim]
+J_scaled = StandardScaler().fit_transform(J_param)
 
 print("\n")
 print("===================================================")
 print("Low-dimensional structure diagnostics")
 print("===================================================")
 
-print(f"Jacobian shape: {J_scaled.shape}")
+print(f"Raw Jacobian shape [sample-output, parameter]: {J_np.shape}")
+print(f"Parameter-analysis matrix shape [parameter, sample-output]: {J_scaled.shape}")
 print(f"Covariance shape: {C_np.shape}")
 print(f"Sensitivity shape: {S_np.shape}")
 
 
 # ============================================================
-# PCA on Jacobian rows
+# PCA on Jacobian parameter rows
 # ============================================================
 
-pca = PCA(n_components=min(64, J_scaled.shape[1]))
+pca = PCA(n_components=min(64, J_scaled.shape[0], J_scaled.shape[1]))
 J_pca = pca.fit_transform(J_scaled)
 
 explained = pca.explained_variance_ratio_
@@ -1249,7 +1266,7 @@ fig, ax = plt.subplots(figsize=(7.2, 5.5))
 ax.plot(cum_explained, linewidth=2.0)
 ax.axhline(0.95, linestyle="--")
 
-ax.set_title("Jacobian PCA cumulative explained variance")
+ax.set_title("Parameter-Jacobian PCA cumulative explained variance")
 ax.set_xlabel("Principal component")
 ax.set_ylabel("Cumulative explained variance")
 
@@ -1276,7 +1293,7 @@ ax.scatter(
     rasterized=True,
 )
 
-ax.set_title("Jacobian PCA projection")
+ax.set_title("Parameter-Jacobian PCA projection")
 ax.set_xlabel("PC1")
 ax.set_ylabel("PC2")
 
@@ -1296,13 +1313,13 @@ save_pub_figure(
 # Multiple PCA component scores against parameter index
 # ------------------------------------------------------------
 
-# Treat each parameter as an observation, with sensitivities over samples as features
-J_param = J_scaled.T   # shape: [n_parameters, n_samples * output_dim]
+# Treat each parameter as an observation, with sensitivities over samples as features.
+# J_scaled is already parameter-level: [n_parameters, n_samples * output_dim].
+n_param_components = min(4, J_scaled.shape[0], J_scaled.shape[1])
+pca_param = PCA(n_components=n_param_components)
+param_pca = pca_param.fit_transform(J_scaled)
 
-pca_param = PCA(n_components=4)
-param_pca = pca_param.fit_transform(J_param)
-
-pcs_to_plot = [0, 1, 2, 3]
+pcs_to_plot = list(range(n_param_components))
 parameter_index = np.arange(param_pca.shape[0])
 
 fig, ax = plt.subplots(figsize=(8.0, 5.5))
@@ -1344,7 +1361,7 @@ print("Running Isomap...")
 
 isomap = Isomap(
     n_components=2,
-    n_neighbors=20,
+    n_neighbors=min(20, max(1, J_scaled.shape[0] - 1)),
 )
 
 J_iso = isomap.fit_transform(J_scaled)
@@ -1359,7 +1376,7 @@ ax.scatter(
     rasterized=True,
 )
 
-ax.set_title("Jacobian Isomap embedding")
+ax.set_title("Parameter-Jacobian Isomap embedding")
 ax.set_xlabel("Component 1")
 ax.set_ylabel("Component 2")
 
@@ -1380,7 +1397,7 @@ print("Running t-SNE...")
 
 tsne = TSNE(
     n_components=2,
-    perplexity=30,
+    perplexity=min(30, max(1, (J_scaled.shape[0] - 1) // 3)),
     init="pca",
     learning_rate="auto",
     random_state=cfg.seed,
@@ -1398,7 +1415,7 @@ ax.scatter(
     rasterized=True,
 )
 
-ax.set_title("Jacobian t-SNE embedding")
+ax.set_title("Parameter-Jacobian t-SNE embedding")
 ax.set_xlabel("t-SNE 1")
 ax.set_ylabel("t-SNE 2")
 
@@ -1421,7 +1438,7 @@ if HAS_UMAP:
 
     reducer = umap.UMAP(
         n_components=2,
-        n_neighbors=25,
+        n_neighbors=min(25, max(2, J_scaled.shape[0] - 1)),
         min_dist=0.1,
         metric="euclidean",
         random_state=cfg.seed,
@@ -1439,7 +1456,7 @@ if HAS_UMAP:
         rasterized=True,
     )
 
-    ax.set_title("Jacobian UMAP embedding")
+    ax.set_title("Parameter-Jacobian UMAP embedding")
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
 
@@ -1527,11 +1544,11 @@ ax.scatter(
 )
 
 ax.set_title(
-    f"PCA distance preservation\ncorr={corr:.3f}"
+    f"Parameter PCA distance preservation\ncorr={corr:.3f}"
 )
 
-ax.set_xlabel("High-dimensional distance")
-ax.set_ylabel("Low-dimensional distance")
+ax.set_xlabel("High-dimensional parameter-signature distance")
+ax.set_ylabel("Low-dimensional parameter-embedding distance")
 
 prettify_axes(ax)
 
