@@ -568,9 +568,9 @@ def parameter_metadata(model):
     return rows
 
 
-param_meta = parameter_metadata(model)
-param_groups = np.array([m["group"] for m in param_meta])
+# param_meta = parameter_metadata(model)
+# param_groups = np.array([m["group"] for m in param_meta])
 
-assert len(param_meta) == J_np.shape[1], (
-    f"Metadata length {len(param_meta)} does not match n_parameters {J_np.shape[1]}"
-)
+# assert len(param_meta) == J_np.shape[1], (
+#     f"Metadata length {len(param_meta)} does not match n_parameters {J_np.shape[1]}"
+# )

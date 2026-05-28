@@ -1296,15 +1296,21 @@ save_pub_figure(
 # Multiple PCA component scores against parameter index
 # ------------------------------------------------------------
 
+# Treat each parameter as an observation, with sensitivities over samples as features
+J_param = J_scaled.T   # shape: [n_parameters, n_samples * output_dim]
+
+pca_param = PCA(n_components=4)
+param_pca = pca_param.fit_transform(J_param)
+
 pcs_to_plot = [0, 1, 2, 3]
-parameter_index = np.arange(J_pca.shape[0])
+parameter_index = np.arange(param_pca.shape[0])
 
 fig, ax = plt.subplots(figsize=(8.0, 5.5))
 
 for pc in pcs_to_plot:
     ax.plot(
         parameter_index,
-        J_pca[:, pc],
+        param_pca[:, pc],
         linewidth=1.1,
         label=f"PC{pc + 1}",
     )
