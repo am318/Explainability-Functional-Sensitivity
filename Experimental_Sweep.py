@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.optim
 
 from datasets import (
     available_datasets,
@@ -26,7 +26,6 @@ from utilities import (
     eigvals_from_covariance,
     flatten_param_magnitudes,
     mass_on_indices,
-    mean_abs_sensitivity_by_output,
     parameter_count,
     prettify_axes,
     reduce_sensitivity_to_parameter_level,
@@ -34,6 +33,7 @@ from utilities import (
     sensitivity_scores,
     spearman_corr,
     topk_indices,
+    iter_jacobian_chunks,       
 )
 
 
@@ -52,17 +52,17 @@ def _env_str(name, default):
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
-    dataset_name: str = _env_str("DATASET", "symmetric_vector_field")
+    dataset_name: str = _env_str("DATASET", "parabola")
 
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)
 
     n_hidden: int = _env_int("N_HIDDEN", 2)
-    hidden_width: int = _env_int("HIDDEN_WIDTH", 16)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 8)
     lr: float = _env_float("LR", 1e-2)
-    epochs: int = _env_int("EPOCHS", 100000)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 40)
+    epochs: int = _env_int("EPOCHS", 10000)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 20)
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
 
@@ -80,7 +80,7 @@ class Config:
     field_scale: float = _env_float("FIELD_SCALE", 1.0)
     noise_multiplier: float = _env_float("NOISE_MULTIPLIER", 5e-2)
     plot_grid_size: int = _env_int("PLOT_GRID_SIZE", 45)
-    jacobian_chunk_size: int = _env_int("JACOBIAN_CHUNK_SIZE", 64)
+    jacobian_chunk_size: int = _env_int("JACOBIAN_CHUNK_SIZE", 2048)
     run_manifold: bool = _env_int("RUN_MANIFOLD", 1) != 0
 
     def __post_init__(self):
@@ -241,9 +241,10 @@ scheduler = _build_scheduler(optimizer, cfg)
 # Initial sensitivities
 # ============================================================
 
-J_init = compute_parameter_jacobian(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
-C_init = compute_covariance(J_init)
-S_init = sensitivity_scores(J_init)
+from utilities import compute_covariance_from_model, sensitivity_scores_from_model
+C_init = compute_covariance_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
+S_init = sensitivity_scores_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
+J_init = None  # no longer needed for downstream plots
 init_topk_idx = topk_indices(S_init, cfg.topk_frac)
 
 history = {
@@ -290,19 +291,37 @@ for epoch in range(cfg.epochs + 1):
 
         current_lr = scheduler.get_last_lr()[0]
 
-        J = compute_parameter_jacobian(model, x_sens, chunk_size=cfg.jacobian_chunk_size)
-        S_curr = sensitivity_scores(J)
+        # Single Jacobian pass: accumulate S_curr, mean_abs_sens, and
+        # (if needed) C_ref — avoiding a second full materialisation.
+        sq_sum = None      # for sensitivity_scores  -> S_curr
+        abs_sum = None     # for mean_abs_sensitivity -> mean_abs_sens  [n_outputs, n_params]
+        C_acc = None       # for covariance           -> C_ref (only when needed)
+        N_jac = 0
+        need_cov = (S_ref is None) and (epoch >= cfg.compare_epoch)
+
+        for Jc in iter_jacobian_chunks(model, x_sens, chunk_size=cfg.jacobian_chunk_size):
+            # Jc: [chunk, n_params]  (single-output) or [chunk, n_outputs, n_params]
+            sq_sum = Jc.pow(2).sum(dim=0) if sq_sum is None else sq_sum + Jc.pow(2).sum(dim=0)
+            abs_c = Jc.abs().mean(dim=0) * Jc.shape[0]   # weighted sum over chunk
+            abs_sum = abs_c if abs_sum is None else abs_sum + abs_c
+            if need_cov:
+                flat = Jc if Jc.ndim == 2 else Jc.flatten(start_dim=1)
+                C_acc = flat.T @ flat if C_acc is None else C_acc + flat.T @ flat
+            N_jac += Jc.shape[0]
+
+        S_curr = sq_sum / N_jac
+        mean_abs_sens = (abs_sum / N_jac).detach().cpu().numpy()
+        mean_abs_sens = np.atleast_2d(mean_abs_sens)   # ensure [n_outputs, n_params]
 
         rho_init_curr = spearman_corr(S_init, S_curr)
         init_topk_mass = mass_on_indices(S_curr, init_topk_idx)
-        mean_abs_sens = mean_abs_sensitivity_by_output(model, x_sens).detach().cpu().numpy()
 
         rho_ref_curr = np.nan
         ref_topk_mass = np.nan
 
-        if (S_ref is None) and (epoch >= cfg.compare_epoch):
+        if need_cov:
             S_ref = S_curr.detach().clone()
-            C_ref = compute_covariance(J).detach().clone()
+            C_ref = (C_acc / N_jac).detach().clone()
             ref_topk_idx = topk_indices(S_ref, cfg.topk_frac)
             ref_epoch = epoch
             print(f"Captured reference snapshot at epoch={ref_epoch}")
