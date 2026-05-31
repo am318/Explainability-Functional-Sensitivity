@@ -334,6 +334,149 @@ ACCENT_ORANGE = "#C44E52"
 ACCENT_PURPLE = "#8172B3"
 ACCENT_GRAY = "#6C757D"
 
+
+# ============================================================
+# Parameter-location colours
+# ============================================================
+# Each trainable scalar parameter is assigned a categorical location label
+# based on its position in model.net. These labels are aligned with the
+# flattened parameter order used by the Jacobian/sensitivity utilities.
+
+LOCATION_CMAP = plt.get_cmap("tab20")
+
+
+def parameter_location_metadata(model):
+    """Return flattened parameter metadata aligned with named_parameters().
+
+    Returns
+    -------
+    labels : np.ndarray[str], shape [n_parameters]
+        Per-scalar categorical location labels.
+    colours : np.ndarray[object], shape [n_parameters]
+        Matplotlib colours, one per scalar parameter.
+    unique_labels : list[str]
+        Labels in first-appearance order.
+    colour_map : dict[str, tuple]
+        Mapping from label to RGBA colour.
+    spans : list[tuple[int, int, str]]
+        Contiguous flattened index spans for each named parameter tensor.
+    """
+    labels = []
+    spans = []
+    cursor = 0
+
+    for name, p in model.named_parameters():
+        n = p.numel()
+        parts = name.split(".")
+
+        # For SmallMLP, names are usually net.<module_index>.<weight|bias>.
+        if len(parts) >= 3 and parts[0] == "net" and parts[1].isdigit():
+            module_idx = int(parts[1])
+            module = model.net[module_idx]
+            param_kind = parts[-1]
+
+            if isinstance(module, nn.Linear):
+                linear_position = sum(
+                    isinstance(model.net[j], nn.Linear)
+                    for j in range(module_idx + 1)
+                ) - 1
+                n_linear = sum(isinstance(m, nn.Linear) for m in model.net)
+                if linear_position == 0:
+                    block = "input linear"
+                elif linear_position == n_linear - 1:
+                    block = "output linear"
+                else:
+                    block = f"hidden linear {linear_position}"
+                label = f"{block} {param_kind}"
+
+            elif isinstance(module, nn.LayerNorm):
+                norm_position = sum(
+                    isinstance(model.net[j], nn.LayerNorm)
+                    for j in range(module_idx + 1)
+                ) - 1
+                label = f"layernorm {norm_position} {param_kind}"
+
+            else:
+                label = f"net.{module_idx} {param_kind}"
+        else:
+            label = name
+
+        labels.extend([label] * n)
+        spans.append((cursor, cursor + n, label))
+        cursor += n
+
+    labels = np.asarray(labels, dtype=object)
+    unique_labels = list(dict.fromkeys(labels.tolist()))
+    colour_map = {
+        lab: LOCATION_CMAP(i % LOCATION_CMAP.N)
+        for i, lab in enumerate(unique_labels)
+    }
+    colours = np.asarray([colour_map[lab] for lab in labels], dtype=object)
+    return labels, colours, unique_labels, colour_map, spans
+
+
+def add_parameter_location_legend(ax, unique_labels, colour_map, *, loc="best", max_labels=16):
+    """Attach a compact categorical legend for parameter locations."""
+    from matplotlib.lines import Line2D
+
+    shown = unique_labels[:max_labels]
+    handles = [
+        Line2D(
+            [0], [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor=colour_map[label],
+            markeredgecolor="none",
+            markersize=6,
+            label=label,
+        )
+        for label in shown
+    ]
+    if len(unique_labels) > max_labels:
+        handles.append(
+            Line2D([0], [0], linestyle="None", label=f"+{len(unique_labels) - max_labels} more")
+        )
+    ax.legend(handles=handles, frameon=False, loc=loc, fontsize=7, ncol=1)
+
+
+def add_parameter_location_boundaries(ax, spans, *, axis="y", color="white", alpha=0.55):
+    """Mark parameter-tensor boundaries on parameter-index axes."""
+    for start, stop, _ in spans[:-1]:
+        boundary = stop - 0.5
+        if axis == "y":
+            ax.axhline(boundary, color=color, linewidth=0.45, alpha=alpha)
+        else:
+            ax.axvline(boundary, color=color, linewidth=0.45, alpha=alpha)
+
+
+param_location_labels, param_location_colours, param_location_unique, param_location_colour_map, param_location_spans = parameter_location_metadata(model)
+
+def _align_colours_to_jacobian(colours, n_jacobian_params):
+    """Tile param_location_colours to match the Jacobian parameter axis.
+
+    compute_parameter_jacobian stacks one block of n_params per output
+    dimension, so the Jacobian's parameter axis has shape
+    [output_dim * n_params].  We repeat the colour array accordingly so
+    each block keeps the same location colouring.
+    """
+    n = len(colours)
+    if n_jacobian_params == n:
+        return colours
+    if n_jacobian_params % n == 0:
+        reps = n_jacobian_params // n
+        return np.tile(colours, (reps, 1)) if colours.ndim == 2 else np.concatenate([colours] * reps)
+    # Fallback: truncate or pad with a neutral colour
+    import warnings
+    warnings.warn(
+        f"param_location_colours length {n} does not divide Jacobian "
+        f"parameter count {n_jacobian_params}; colours will be truncated/padded.",
+        RuntimeWarning,
+    )
+    if n_jacobian_params < n:
+        return colours[:n_jacobian_params]
+    pad = np.array([(0.5, 0.5, 0.5, 1.0)] * (n_jacobian_params - n), dtype=object)
+    return np.concatenate([colours, pad])
+
 grid_x = torch.linspace(cfg.x_min, cfg.x_max, cfg.plot_grid_size, dtype=torch.float32, device=device)
 grid_y = torch.zeros_like(grid_x)
 grid_state = torch.stack([grid_x, grid_y], dim=-1)
@@ -514,10 +657,9 @@ ax4.scatter(
     y_init,
     s=9,
     alpha=0.35,
-    label="initial",
     marker="o",
     linewidths=0.0,
-    color=ACCENT_BLUE,
+    c=param_location_colours,
     rasterized=True,
 )
 
@@ -525,13 +667,13 @@ ax4.scatter(
     x_final,
     y_final,
     s=14,
-    alpha=0.38,
-    label="final",
+    alpha=0.55,
     marker="x",
     linewidths=0.9,
-    color=ACCENT_ORANGE,
+    c=param_location_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax4, param_location_unique, param_location_colour_map, loc="best")
 
 
 ax4.set_xscale("log")
@@ -591,6 +733,7 @@ for out_idx, ax in enumerate(axes):
     #     pad=6,
     # )
     ax.set_ylabel("Parameter index")
+    add_parameter_location_boundaries(ax, param_location_spans, axis="y")
     prettify_axes(ax)
 
 for ax in axes:
@@ -653,6 +796,10 @@ S_np = S_final.detach().cpu().numpy()
 J_param = J_np.T  # shape: [n_parameters, n_samples * output_dim]
 J_scaled = StandardScaler().fit_transform(J_param)
 
+# Jacobian parameter axis may be output_dim × n_params if compute_parameter_jacobian
+# stacks one block per output.  Align the colour array to match.
+jac_param_colours = _align_colours_to_jacobian(param_location_colours, J_scaled.shape[0])
+
 print("\n")
 print("===================================================")
 print("Low-dimensional structure diagnostics")
@@ -704,9 +851,11 @@ if dim == 2:
         J_pca[:, 0],
         J_pca[:, 1],
         s=10,
-        alpha=0.55,
+        alpha=0.65,
+        c=jac_param_colours,
         rasterized=True,
     )
+    add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
     ax.set_title("Parameter-Jacobian PCA projection")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
@@ -720,9 +869,11 @@ else:
         J_pca[:, 1],
         J_pca[:, 2],
         s=10,
-        alpha=0.55,
+        alpha=0.65,
+        c=jac_param_colours,
         depthshade=False,
     )
+    add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
     ax.set_title("Parameter-Jacobian PCA projection")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
@@ -757,9 +908,11 @@ ax.scatter(
     J_iso[:, 0],
     J_iso[:, 1],
     s=10,
-    alpha=0.55,
+    alpha=0.65,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_title("Parameter-Jacobian Isomap embedding")
 ax.set_xlabel("Component 1")
@@ -796,9 +949,11 @@ ax.scatter(
     J_tsne[:, 0],
     J_tsne[:, 1],
     s=10,
-    alpha=0.55,
+    alpha=0.65,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_title("Parameter-Jacobian t-SNE embedding")
 ax.set_xlabel("t-SNE 1")
@@ -837,9 +992,11 @@ if HAS_UMAP:
         J_umap[:, 0],
         J_umap[:, 1],
         s=10,
-        alpha=0.55,
+        alpha=0.65,
+        c=jac_param_colours,
         rasterized=True,
     )
+    add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
     ax.set_title("Parameter-Jacobian UMAP embedding")
     ax.set_xlabel("UMAP 1")
@@ -948,11 +1105,22 @@ save_pub_figure(
 # Sensitivity ordering structure
 # ============================================================
 
-sorted_sens = np.sort(S_np)[::-1]
+sort_idx = np.argsort(S_np)[::-1]
+sorted_sens = S_np[sort_idx]
+sorted_colours = param_location_colours[sort_idx]
 
 fig, ax = plt.subplots(figsize=(7.0, 5.5))
 
-ax.plot(sorted_sens)
+ax.scatter(
+    np.arange(sorted_sens.size),
+    sorted_sens,
+    s=10,
+    alpha=0.65,
+    c=sorted_colours,
+    linewidths=0.0,
+    rasterized=True,
+)
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_xscale("log")
 ax.set_yscale("log")
@@ -1100,10 +1268,9 @@ ax4.scatter(
     y_init,
     s=9,
     alpha=0.35,
-    label="initial",
     marker="o",
     linewidths=0.0,
-    color=ACCENT_BLUE,
+    c=jac_param_colours,
     rasterized=True,
 )
 
@@ -1111,13 +1278,13 @@ ax4.scatter(
     x_final,
     y_final,
     s=14,
-    alpha=0.38,
-    label="final",
+    alpha=0.55,
     marker="x",
     linewidths=0.9,
-    color=ACCENT_ORANGE,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax4, param_location_unique, param_location_colour_map, loc="best")
 
 
 ax4.set_xscale("log")
@@ -1177,6 +1344,7 @@ for out_idx, ax in enumerate(axes):
     #     pad=6,
     # )
     ax.set_ylabel("Parameter index")
+    add_parameter_location_boundaries(ax, param_location_spans, axis="y")
     prettify_axes(ax)
 
 for ax in axes:
@@ -1296,8 +1464,10 @@ ax.scatter(
     J_pca[:, 1],
     s=10,
     alpha=0.55,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_title("Parameter-Jacobian PCA projection")
 ax.set_xlabel("PC1")
@@ -1331,10 +1501,21 @@ parameter_index = np.arange(param_pca.shape[0])
 fig, ax = plt.subplots(figsize=(8.0, 5.5))
 
 for pc in pcs_to_plot:
+    ax.scatter(
+        parameter_index,
+        param_pca[:, pc],
+        s=9,
+        alpha=0.65,
+        c=jac_param_colours,
+        marker="o",
+        linewidths=0.0,
+        rasterized=True,
+    )
     ax.plot(
         parameter_index,
         param_pca[:, pc],
-        linewidth=1.1,
+        linewidth=0.75,
+        alpha=0.35,
         label=f"PC{pc + 1}",
     )
 
@@ -1343,7 +1524,9 @@ ax.axhline(0.0, linestyle="--", linewidth=1.0)
 ax.set_title("Jacobian PCA scores by parameter")
 ax.set_xlabel("Parameter index")
 ax.set_ylabel("PC score")
-ax.legend(frameon=False)
+add_parameter_location_boundaries(ax, param_location_spans, axis="x", color=ACCENT_GRAY, alpha=0.35)
+ax.legend(frameon=False, loc="best")
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="upper right")
 
 prettify_axes(ax)
 
@@ -1378,9 +1561,11 @@ ax.scatter(
     J_iso[:, 0],
     J_iso[:, 1],
     s=10,
-    alpha=0.55,
+    alpha=0.65,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_title("Parameter-Jacobian Isomap embedding")
 ax.set_xlabel("Component 1")
@@ -1417,9 +1602,11 @@ ax.scatter(
     J_tsne[:, 0],
     J_tsne[:, 1],
     s=10,
-    alpha=0.55,
+    alpha=0.65,
+    c=jac_param_colours,
     rasterized=True,
 )
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_title("Parameter-Jacobian t-SNE embedding")
 ax.set_xlabel("t-SNE 1")
@@ -1458,9 +1645,11 @@ if HAS_UMAP:
         J_umap[:, 0],
         J_umap[:, 1],
         s=10,
-        alpha=0.55,
+        alpha=0.65,
+        c=jac_param_colours,
         rasterized=True,
     )
+    add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
     ax.set_title("Parameter-Jacobian UMAP embedding")
     ax.set_xlabel("UMAP 1")
@@ -1569,11 +1758,22 @@ save_pub_figure(
 # Sensitivity ordering structure
 # ============================================================
 
-sorted_sens = np.sort(S_np)[::-1]
+sort_idx = np.argsort(S_np)[::-1]
+sorted_sens = S_np[sort_idx]
+sorted_colours = param_location_colours[sort_idx]
 
 fig, ax = plt.subplots(figsize=(7.0, 5.5))
 
-ax.plot(sorted_sens)
+ax.scatter(
+    np.arange(sorted_sens.size),
+    sorted_sens,
+    s=10,
+    alpha=0.65,
+    c=sorted_colours,
+    linewidths=0.0,
+    rasterized=True,
+)
+add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
 
 ax.set_xscale("log")
 ax.set_yscale("log")
