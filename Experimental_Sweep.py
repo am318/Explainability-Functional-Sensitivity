@@ -76,19 +76,8 @@ os.makedirs(output_dir, exist_ok=True)
 
 
 # ============================================================
-# Dataset: learn the scalar parabola y = x^3
+# Dataset: 
 # ============================================================
-# Input:  x
-# Target: y = x^3
-
-power = 3
-
-def parabola_target(x, field_scale=1.0):
-    # return field_scale * x.pow(power)
-    return torch.sin(x)
-
-def sample_x(n, x_min=-1.0, x_max=1.0):
-    return x_min + (x_max - x_min) * torch.rand(n, 1, dtype=torch.float32)
 
 
 x_train = sample_x(cfg.n_train, cfg.x_min, cfg.x_max).to(device)
