@@ -61,8 +61,8 @@ class Config:
     n_hidden: int = _env_int("N_HIDDEN", 2)
     hidden_width: int = _env_int("HIDDEN_WIDTH", 8)
     lr: float = _env_float("LR", 1e-2)
-    epochs: int = _env_int("EPOCHS", 10000)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 20)
+    epochs: int = _env_int("EPOCHS", 100000)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 40)
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
 
