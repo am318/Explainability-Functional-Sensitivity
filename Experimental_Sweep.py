@@ -52,20 +52,25 @@ def _env_str(name, default):
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
-    dataset_name: str = _env_str("DATASET", "parabola")
+    dataset_name: str = _env_str("DATASET", "symmetric_vector_field")
 
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)
 
     n_hidden: int = _env_int("N_HIDDEN", 2)
-    hidden_width: int = _env_int("HIDDEN_WIDTH", 8)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 16)
     lr: float = _env_float("LR", 1e-2)
-    epochs: int = _env_int("EPOCHS", 10000)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 0)
-    compare_epoch: int = _env_int("COMPARE_EPOCH", 0)
+    epochs: int = _env_int("EPOCHS", 100000)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 40)
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
+
+    # Learning rate scheduler: linear warm-up -> cosine decay (no restarts)
+    # eta_min: minimum LR floor at the end of the cosine decay
+    lr_scheduler: str = _env_str("LR_SCHEDULER", "cosine_decay")
+    lr_eta_min: float = _env_float("LR_ETA_MIN", 1e-6)
+    lr_warmup_epochs: int = _env_int("LR_WARMUP_EPOCHS", 100)
 
     x_min: float | None = None
     x_max: float | None = None
@@ -76,11 +81,11 @@ class Config:
     noise_multiplier: float = _env_float("NOISE_MULTIPLIER", 5e-2)
     plot_grid_size: int = _env_int("PLOT_GRID_SIZE", 45)
     jacobian_chunk_size: int = _env_int("JACOBIAN_CHUNK_SIZE", 64)
-    run_manifold: bool = _env_int("RUN_MANIFOLD", 0) != 0
+    run_manifold: bool = _env_int("RUN_MANIFOLD", 1) != 0
 
     def __post_init__(self):
-        self.checkpoint_interval = self.checkpoint_interval or max(1, self.epochs // 20)
-        self.compare_epoch = self.compare_epoch or max(1, self.epochs // 20)
+        self.checkpoint_interval = self.epochs // self.checkpoint_interval
+        self.compare_epoch =  self.epochs // self.checkpoint_interval
         self.x_min = _env_float("X_MIN", self.x_min) if "X_MIN" in os.environ else self.x_min
         self.x_max = _env_float("X_MAX", self.x_max) if "X_MAX" in os.environ else self.x_max
         self.v_min = _env_float("V_MIN", self.v_min) if "V_MIN" in os.environ else self.v_min
@@ -186,7 +191,51 @@ initial_model.load_state_dict(initial_state)
 initial_model.eval()
 
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
+optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
+
+# ============================================================
+# Learning rate scheduler
+# ============================================================
+# Linear warm-up for cfg.lr_warmup_epochs, then a single cosine decay
+# from cfg.lr down to cfg.lr_eta_min over the remaining training epochs.
+# This is the standard schedule for SOTA models (GPT-3, LLaMA, ViT, etc.):
+# warm-up stabilises early optimisation; cosine decay smoothly anneals
+# the LR without periodic restarts, letting the model converge to a
+# flat minimum by the end of training.
+
+def _build_scheduler(optimizer, cfg):
+    decay_epochs = max(1, cfg.epochs - cfg.lr_warmup_epochs)
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=decay_epochs,
+        eta_min=cfg.lr_eta_min,
+    )
+    if cfg.lr_warmup_epochs > 0:
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1e-3,
+            end_factor=1.0,
+            total_iters=cfg.lr_warmup_epochs,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[cfg.lr_warmup_epochs],
+        )
+        print(
+            f"Scheduler: {cfg.lr_warmup_epochs}-epoch linear warm-up -> "
+            f"CosineAnnealingLR over {decay_epochs} epochs "
+            f"(eta_min={cfg.lr_eta_min:.1e})"
+        )
+    else:
+        scheduler = cosine
+        print(
+            f"Scheduler: CosineAnnealingLR over {decay_epochs} epochs "
+            f"(eta_min={cfg.lr_eta_min:.1e})"
+        )
+    return scheduler
+
+scheduler = _build_scheduler(optimizer, cfg)
 
 # ============================================================
 # Initial sensitivities
@@ -201,6 +250,7 @@ history = {
     "epoch": [],
     "train_loss": [],
     "test_loss": [],
+    "lr": [],
     "spearman_init_current": [],
     "init_topk_mass": [],
     "spearman_ref_current": [],
@@ -230,12 +280,15 @@ for epoch in range(cfg.epochs + 1):
     loss = task_loss + cfg.l1_lambda * l1_penalty
     loss.backward()
     optimizer.step()
+    scheduler.step()         # advance LR schedule every epoch
 
     if epoch % cfg.checkpoint_interval == 0 or epoch == cfg.epochs:
         model.eval()
         with torch.no_grad():
             train_loss = criterion(model(x_train), y_train_clean).item()
             test_loss = criterion(model(x_test), y_test_clean).item()
+
+        current_lr = scheduler.get_last_lr()[0]
 
         J = compute_parameter_jacobian(model, x_sens, chunk_size=cfg.jacobian_chunk_size)
         S_curr = sensitivity_scores(J)
@@ -261,6 +314,7 @@ for epoch in range(cfg.epochs + 1):
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
         history["test_loss"].append(test_loss)
+        history["lr"].append(current_lr)
         history["spearman_init_current"].append(rho_init_curr)
         history["init_topk_mass"].append(init_topk_mass)
         history["spearman_ref_current"].append(rho_ref_curr)
@@ -269,6 +323,7 @@ for epoch in range(cfg.epochs + 1):
 
         print(
             f"epoch={epoch:6d} | "
+            f"lr={current_lr:.2e} | "
             f"train={train_loss:.3e} | "
             f"test={test_loss:.3e} | "
             f"rho(init,current)={rho_init_curr:.3f} | "
@@ -328,23 +383,46 @@ def parameter_location_metadata(model):
         cursor += n
     labels = np.asarray(labels, dtype=object)
     unique_labels = list(dict.fromkeys(labels.tolist()))
-    cmap = plt.get_cmap("tab20")
-    colour_map = {lab: cmap(i % cmap.N) for i, lab in enumerate(unique_labels)}
+    # High-contrast qualitative palette (perceptually distinct even for many layers)
+    _CONTRAST_PALETTE = [
+        "#E63946",  # vivid red
+        "#2196F3",  # vivid blue
+        "#FF9800",  # vivid orange
+        "#4CAF50",  # vivid green
+        "#9C27B0",  # vivid purple
+        "#00BCD4",  # vivid cyan
+        "#FF5722",  # deep orange
+        "#3F51B5",  # indigo
+        "#CDDC39",  # lime
+        "#F06292",  # pink
+        "#26A69A",  # teal
+        "#FFC107",  # amber
+        "#5C6BC0",  # medium indigo
+        "#66BB6A",  # medium green
+        "#EF5350",  # medium red
+        "#29B6F6",  # light blue
+        "#AB47BC",  # medium purple
+        "#FF7043",  # deep orange variant
+        "#26C6DA",  # cyan variant
+        "#D4E157",  # yellow-green
+    ]
+    colour_map = {lab: _CONTRAST_PALETTE[i % len(_CONTRAST_PALETTE)] for i, lab in enumerate(unique_labels)}
     colours = np.asarray([colour_map[lab] for lab in labels], dtype=object)
     return labels, colours, unique_labels, colour_map, spans
 
 
 def add_parameter_location_legend(ax, unique_labels, colour_map, *, loc="best", max_labels=16):
-    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
     shown = unique_labels[:max_labels]
     handles = [
-        Line2D([0], [0], marker="o", linestyle="None", markerfacecolor=colour_map[label],
-               markeredgecolor="none", markersize=5, label=label)
+        Patch(facecolor=colour_map[label], edgecolor="none", label=label)
         for label in shown
     ]
     if len(unique_labels) > max_labels:
+        from matplotlib.lines import Line2D
         handles.append(Line2D([0], [0], linestyle="None", label=f"+{len(unique_labels) - max_labels} more"))
-    ax.legend(handles=handles, frameon=False, loc=loc, fontsize=7)
+    ax.legend(handles=handles, frameon=True, framealpha=0.85, edgecolor="none",
+              loc=loc, fontsize=7, ncol=max(1, len(shown) // 10))
 
 
 def add_parameter_location_boundaries(ax, spans, *, axis="y", color="white", alpha=0.55):
@@ -419,18 +497,64 @@ elif input_dim == 2 and output_dim == 2:
     mean_grid_error = float(vector_err.mean().item())
     max_grid_error = float(vector_err.max().item())
 
-    fig, ax = plt.subplots(figsize=(7.0, 6.0), constrained_layout=False)
     xs = x_test.detach().cpu().numpy()
     ys = y_test_clean.detach().cpu().numpy()
     ps = pred_test.detach().cpu().numpy()
+    err_vecs = ps - ys
     n_plot = min(600, xs.shape[0])
-    ax.quiver(xs[:n_plot, 0], xs[:n_plot, 1], ys[:n_plot, 0], ys[:n_plot, 1], angles="xy", scale_units="xy", scale=1, alpha=0.45)
-    ax.quiver(xs[:n_plot, 0], xs[:n_plot, 1], ps[:n_plot, 0], ps[:n_plot, 1], angles="xy", scale_units="xy", scale=1, alpha=0.45)
-    ax.set_title(f"Target and learned vector field: {spec.name}")
-    ax.set_xlabel("x")
-    ax.set_ylabel("v/y")
-    prettify_axes(ax)
-    save_pub_figure(fig, output_dir / f"Vector_Field_Fit_{run_tag}.pdf")
+
+    # Compute magnitudes for colouring
+    target_mag = np.linalg.norm(ys[:n_plot], axis=1)
+    learned_mag = np.linalg.norm(ps[:n_plot], axis=1)
+    error_mag = np.linalg.norm(err_vecs[:n_plot], axis=1)
+
+    def _quiver_coloured(ax, x, u, v, mag, cmap, title, clabel):
+        norm = plt.Normalize(vmin=mag.min(), vmax=mag.max())
+        q = ax.quiver(
+            x[:, 0], x[:, 1], u, v,
+            mag,
+            cmap=cmap, norm=norm,
+            angles="xy", scale_units="xy", scale=1, alpha=0.85,
+        )
+        cbar = plt.colorbar(q, ax=ax, pad=0.04, fraction=0.046)
+        cbar.set_label(clabel, fontsize=9)
+        ax.set_title(title)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        prettify_axes(ax)
+
+    # # Plot 1: Target vector field
+    # fig, ax = plt.subplots(figsize=(7.0, 6.0), constrained_layout=True)
+    # _quiver_coloured(
+    #     ax,
+    #     xs[:n_plot], ys[:n_plot, 0], ys[:n_plot, 1],
+    #     target_mag, "Blues_r",
+    #     f"Target vector field: {spec.name}",
+    #     "magnitude",
+    # )
+    # save_pub_figure(fig, output_dir / f"Vector_Field_Target_{run_tag}.pdf")
+
+    # Plot 2: Learned vector field
+    fig, ax = plt.subplots(figsize=(7.0, 6.0), constrained_layout=True)
+    _quiver_coloured(
+        ax,
+        xs[:n_plot], ps[:n_plot, 0], ps[:n_plot, 1],
+        learned_mag, "Oranges_r",
+        f"Learned vector field: {spec.name}",
+        "magnitude",
+    )
+    save_pub_figure(fig, output_dir / f"Vector_Field_Learned_{run_tag}.pdf")
+
+    # Plot 3: Error field (learned − target)
+    fig, ax = plt.subplots(figsize=(7.0, 6.0), constrained_layout=True)
+    _quiver_coloured(
+        ax,
+        xs[:n_plot], err_vecs[:n_plot, 0], err_vecs[:n_plot, 1],
+        error_mag, "Reds",
+        f"Error field (learned − target): {spec.name}",
+        "|error|",
+    )
+    save_pub_figure(fig, output_dir / f"Vector_Field_Error_{run_tag}.pdf")
 
 # ============================================================
 # Shared plots
@@ -460,6 +584,15 @@ prettify_axes(ax)
 beautify_legend(ax, loc="best")
 save_pub_figure(fig, output_dir / f"Loss_Evolution_{run_tag}.pdf")
 
+fig, ax = plt.subplots(figsize=(7.4, 4.0), constrained_layout=False)
+ax.plot(history["epoch"], history["lr"], color=ACCENT_TEAL)
+ax.set_yscale("log")
+ax.set_title("Learning rate schedule")
+ax.set_xlabel("Epoch")
+ax.set_ylabel("Learning rate")
+prettify_axes(ax)
+save_pub_figure(fig, output_dir / f"LR_Schedule_{run_tag}.pdf")
+
 S_init_dist = S_init.detach().cpu().numpy()
 S_final_dist = S_final.detach().cpu().numpy()
 positive_vals = np.concatenate([S_init_dist[S_init_dist > 0], S_final_dist[S_final_dist > 0]])
@@ -482,16 +615,38 @@ param_mag_final = flatten_param_magnitudes(model)
 sens_init_red = reduce_sensitivity_to_parameter_level(initial_model, S_init)
 sens_final_red = reduce_sensitivity_to_parameter_level(model, S_final)
 eps = 1e-30
-fig, ax = plt.subplots(figsize=(8.2, 6.0), constrained_layout=False)
-ax.scatter(param_mag_init.clamp_min(eps).cpu().numpy(), sens_init_red.clamp_min(eps).cpu().numpy(), s=9, alpha=0.35, marker="o", linewidths=0.0, c=param_location_colours, rasterized=True)
-ax.scatter(param_mag_final.clamp_min(eps).cpu().numpy(), sens_final_red.clamp_min(eps).cpu().numpy(), s=14, alpha=0.55, marker="x", linewidths=0.9, c=param_location_colours, rasterized=True)
-add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
-ax.set_xscale("log")
-ax.set_yscale("log")
-ax.set_title("Unnormalised sensitivity vs parameter magnitude")
-ax.set_xlabel(r"$|\theta_i|$")
-ax.set_ylabel(r"$S(\theta_i)$")
-prettify_axes(ax)
+
+fig, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(14.0, 6.0), constrained_layout=True)
+
+ax_before.scatter(
+    param_mag_init.clamp_min(eps).cpu().numpy(),
+    sens_init_red.clamp_min(eps).cpu().numpy(),
+    s=12, alpha=0.55, marker="o", linewidths=0.0,
+    c=param_location_colours, rasterized=True,
+)
+add_parameter_location_legend(ax_before, param_location_unique, param_location_colour_map, loc="best")
+ax_before.set_xscale("log")
+ax_before.set_yscale("log")
+ax_before.set_title("Before training")
+ax_before.set_xlabel(r"$|\theta_i|$")
+ax_before.set_ylabel(r"$S(\theta_i)$")
+prettify_axes(ax_before)
+
+ax_after.scatter(
+    param_mag_final.clamp_min(eps).cpu().numpy(),
+    sens_final_red.clamp_min(eps).cpu().numpy(),
+    s=12, alpha=0.55, marker="o", linewidths=0.0,
+    c=param_location_colours, rasterized=True,
+)
+add_parameter_location_legend(ax_after, param_location_unique, param_location_colour_map, loc="best")
+ax_after.set_xscale("log")
+ax_after.set_yscale("log")
+ax_after.set_title("After training")
+ax_after.set_xlabel(r"$|\theta_i|$")
+ax_after.set_ylabel(r"$S(\theta_i)$")
+prettify_axes(ax_after)
+
+fig.suptitle("Unnormalised sensitivity vs parameter magnitude", fontsize=13)
 save_pub_figure(fig, output_dir / f"Sensitivity_vs_Parameter_Magnitude_{run_tag}.pdf")
 
 Q_abs = np.stack(history["mean_abs_sensitivity"], axis=0)
@@ -508,6 +663,7 @@ for out_idx, ax in enumerate(axes):
     im = ax.imshow(Q_abs[:, out_idx, :].T, aspect="auto", origin="lower", interpolation="nearest", cmap="magma", vmin=0.0, vmax=vmax, extent=[checkpoint_epochs[0], checkpoint_epochs[-1], -0.5, n_params - 0.5])
     ax.set_ylabel("Parameter index")
     ax.set_xlabel("Iteration number")
+    ax.set_title(f'Output {out_idx}')
     add_parameter_location_boundaries(ax, param_location_spans, axis="y")
     prettify_axes(ax)
 fig.colorbar(im, ax=axes[-1], pad=0.04, fraction=0.046).set_label(r"mean $|\partial f_k / \partial \theta_i|$")
@@ -578,7 +734,10 @@ try:
 
     sort_idx = np.argsort(S_np)[::-1]
     fig, ax = plt.subplots(figsize=(7.0, 5.5))
-    ax.scatter(np.arange(S_np.size), S_np[sort_idx], s=10, alpha=0.65, c=np.resize(param_location_colours, S_np.size)[sort_idx], linewidths=0.0, rasterized=True)
+    ax.scatter(np.arange(S_np.size), S_np[sort_idx], s=10, alpha=0.75,
+               c=np.resize(param_location_colours, S_np.size)[sort_idx],
+               linewidths=0.0, rasterized=True)
+    add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_title("Sorted sensitivity spectrum")
@@ -606,6 +765,10 @@ summary = {
     "field_scale": cfg.field_scale,
     "noise_multiplier": cfg.noise_multiplier,
     "parameter_count": parameter_count(model),
+    "lr_scheduler": cfg.lr_scheduler,
+    "lr_eta_min": cfg.lr_eta_min,
+    "lr_warmup_epochs": cfg.lr_warmup_epochs,
+    "final_lr": history["lr"][-1] if history["lr"] else None,
     "final_train_mse_clean": final_train_mse,
     "final_test_mse_clean": final_test_mse,
     "mean_grid_or_test_abs_error": mean_grid_error,
