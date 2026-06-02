@@ -37,6 +37,7 @@ from utilities import (
 )
 
 from plotting_utilities import *
+from subnetwork import prune_sensitive_subnetwork_mlp
 
 
 def _env_int(name, default):
@@ -51,6 +52,18 @@ def _env_str(name, default):
     return os.environ.get(name, default)
 
 
+def _flatten_parameter_sensitivity_like_model(model, sens):
+    """Flatten parameter-level sensitivity to match model.named_parameters()."""
+    if isinstance(sens, dict):
+        parts = []
+        for name, p in model.named_parameters():
+            if name not in sens:
+                raise KeyError(f"Missing sensitivity for parameter {name!r}")
+            parts.append(torch.as_tensor(sens[name], device=p.device).reshape(-1))
+        return torch.cat(parts)
+    return torch.as_tensor(sens).reshape(-1)
+
+
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
@@ -60,13 +73,16 @@ class Config:
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)
 
-    n_hidden: int = _env_int("N_HIDDEN", 2)
-    hidden_width: int = _env_int("HIDDEN_WIDTH", 8)
+    n_hidden: int = _env_int("N_HIDDEN", 3)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 32)
     lr: float = _env_float("LR", 1e-2)
     epochs: int = _env_int("EPOCHS", 10000)
     checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
+
+    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 5e-4)
+    prune_mode: str = _env_str("PRUNE_MODE", "zero")
 
     # Learning rate scheduler: linear warm-up -> cosine decay (no restarts)
     # eta_min: minimum LR floor at the end of the cosine decay
@@ -193,6 +209,33 @@ initial_model.load_state_dict(initial_state)
 initial_model.eval()
 
 criterion = nn.MSELoss()
+
+# ============================================================
+# Initial sensitivities and pre-training pruning
+# ============================================================
+
+from utilities import compute_covariance_from_model, sensitivity_scores_from_model
+C_init = compute_covariance_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
+S_init = sensitivity_scores_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
+J_init = None  # no longer needed for downstream plots
+init_topk_idx = topk_indices(S_init, cfg.topk_frac)
+
+S_init_param = reduce_sensitivity_to_parameter_level(initial_model, S_init)
+S_init_param_flat = _flatten_parameter_sensitivity_like_model(initial_model, S_init_param)
+
+if cfg.prune_mode not in {"freeze", "zero"}:
+    raise ValueError(f"PRUNE_MODE must be 'freeze' or 'zero', got {cfg.prune_mode!r}")
+
+param_masks, unit_masks, mask_hooks = prune_sensitive_subnetwork_mlp(
+    model,
+    S_init_param_flat,
+    threshold=cfg.prune_threshold,
+    mode=cfg.prune_mode,
+)
+
+
+
+# Keep the optimiser after pruning so it only tracks the retained network.
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
 
 # ============================================================
@@ -238,16 +281,6 @@ def _build_scheduler(optimizer, cfg):
     return scheduler
 
 scheduler = _build_scheduler(optimizer, cfg)
-
-# ============================================================
-# Initial sensitivities
-# ============================================================
-
-from utilities import compute_covariance_from_model, sensitivity_scores_from_model
-C_init = compute_covariance_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
-S_init = sensitivity_scores_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
-J_init = None  # no longer needed for downstream plots
-init_topk_idx = topk_indices(S_init, cfg.topk_frac)
 
 history = {
     "epoch": [],
@@ -693,6 +726,18 @@ except Exception as exc:
     effective_dim_95 = None
 
 # ============================================================
+# Pruning statistics for reporting.
+# ============================================================
+
+_pruned_total = 0
+_retained_total = 0
+for _name, _mask in param_masks.items():
+    _mask_bool = torch.as_tensor(_mask, dtype=torch.bool)
+    _retained_total += int(_mask_bool.sum().item())
+    _pruned_total += int(_mask_bool.numel() - _mask_bool.sum().item())
+_pruned_pct = 100.0 * _pruned_total / max(1, (_pruned_total + _retained_total))
+
+# ============================================================
 # Final summary
 # ============================================================
 
@@ -708,6 +753,8 @@ summary = {
     "field_scale": cfg.field_scale,
     "noise_multiplier": cfg.noise_multiplier,
     "parameter_count": parameter_count(model),
+    "pruned_parameter_count": _pruned_total,
+    "pruned_parameter_percentage": _pruned_pct,
     "lr_scheduler": cfg.lr_scheduler,
     "lr_eta_min": cfg.lr_eta_min,
     "lr_warmup_epochs": cfg.lr_warmup_epochs,

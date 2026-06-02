@@ -28,6 +28,7 @@ gpus=(0 1 2 3)
 # Shared overrides — any Config env-var can be added here.
 export SEED="${SEED:-0}"
 export EPOCHS="${EPOCHS:-100000}"
+export CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-40}"
 
 mkdir -p logs
 
