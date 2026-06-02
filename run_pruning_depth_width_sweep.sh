@@ -6,10 +6,6 @@ set -euo pipefail
 # Available: parabola, power, sine, symmetric_vector_field,
 #            morse_vector_field, vanderpol_vector_field, vanderpol_timeseries
 # ============================================================
-
-# Modifications have been made to the below script to only work with zero mode
-
-
 datasets=(
   "morse_vector_field"
   "symmetric_vector_field"
@@ -100,10 +96,10 @@ launch_job() {
   # Output directories.
   local dataset_dir
   case "$dataset" in
-    morse_vector_field)       dataset_dir="Plots/morse" ;;
-    symmetric_vector_field)   dataset_dir="Plots/exp_test" ;;
-    vanderpol_vector_field)   dataset_dir="Plots/vanderpol" ;;
-    *)                        dataset_dir="Plots/${dataset}" ;;
+    morse_vector_field)       dataset_dir="Plots/Pruning/morse" ;;
+    symmetric_vector_field)   dataset_dir="Plots/Pruning/exp_test" ;;
+    vanderpol_vector_field)   dataset_dir="Plots/Pruning/vanderpol" ;;
+    *)                        dataset_dir="Plots/Pruning/${dataset}" ;;
   esac
 
   mkdir -p "$dataset_dir"
