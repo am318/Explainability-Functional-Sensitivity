@@ -19,6 +19,10 @@ datasets=(
 # The single entry-point script.
 SWEEP_SCRIPT="Experimental_Sweep.py"
 
+# Keep output/check artifacts and logs isolated from the other sweep.
+OUTPUT_BASE="Plots"
+LOG_DIR="logs/depth_width"
+
 depths=(1 2 3 4 5 6)
 widths=(8 16 32 64 128 256 512)
 
@@ -30,7 +34,7 @@ export SEED="${SEED:-0}"
 export EPOCHS="${EPOCHS:-100000}"
 export CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-40}"
 
-mkdir -p logs
+mkdir -p "$LOG_DIR"
 
 # One PID slot per GPU; empty string means the GPU is free.
 pids=()
@@ -79,7 +83,7 @@ experiment_artifacts_exist() {
   fi
 
   # Existing log files are also a strong signal that the experiment has already run.
-  if compgen -G "logs/${dataset}_d${depth}_w${width}_gpu*.log" > /dev/null; then
+  if compgen -G "${LOG_DIR}/${dataset}_d${depth}_w${width}_gpu*.log" > /dev/null; then
     return 0
   fi
 
@@ -96,14 +100,14 @@ launch_job() {
   # Output directories.
   local dataset_dir
   case "$dataset" in
-    morse_vector_field)       dataset_dir="Plots/morse" ;;
+    morse_vector_field)       dataset_dir="${OUTPUT_BASE}/morse" ;;
     symmetric_vector_field)   dataset_dir="Plots/exp_test" ;;
     vanderpol_vector_field)   dataset_dir="Plots/vanderpol" ;;
-    *)                        dataset_dir="Plots/${dataset}" ;;
+    *)                        dataset_dir="${OUTPUT_BASE}/${dataset}" ;;
   esac
 
   mkdir -p "$dataset_dir"
-  local log_file="logs/${dataset}_d${depth}_w${width}_gpu${gpu}.log"
+  local log_file="${LOG_DIR}/${dataset}_d${depth}_w${width}_gpu${gpu}.log"
   local done_marker="${dataset_dir}/.done_${dataset}_d${depth}_w${width}"
 
   if experiment_artifacts_exist "$dataset_dir" "$dataset" "$depth" "$width"; then
@@ -145,4 +149,4 @@ for dataset in "${datasets[@]}"; do
 
 done
 
-echo "All runs completed. Logs are in ./logs"
+echo "All runs completed. Logs are in ${LOG_DIR}"
