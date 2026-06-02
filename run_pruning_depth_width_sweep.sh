@@ -6,6 +6,10 @@ set -euo pipefail
 # Available: parabola, power, sine, symmetric_vector_field,
 #            morse_vector_field, vanderpol_vector_field, vanderpol_timeseries
 # ============================================================
+
+# Modifications have been made to the below script to only work with zero mode
+
+
 datasets=(
   "morse_vector_field"
   "symmetric_vector_field"

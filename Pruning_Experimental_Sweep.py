@@ -64,10 +64,48 @@ def _flatten_parameter_sensitivity_like_model(model, sens):
     return torch.as_tensor(sens).reshape(-1)
 
 
+
+def _flatten_parameter_mask_like_model(model, masks):
+    """Flatten parameter masks to match model.named_parameters()."""
+    if isinstance(masks, dict):
+        parts = []
+        for name, p in model.named_parameters():
+            if name not in masks:
+                raise KeyError(f"Missing mask for parameter {name!r}")
+            parts.append(torch.as_tensor(masks[name], device=p.device, dtype=torch.bool).reshape(-1))
+        return torch.cat(parts)
+    return torch.as_tensor(masks, dtype=torch.bool).reshape(-1)
+
+
+def _apply_parameter_mask_(model, masks):
+    """Hard-zero pruned parameters in-place."""
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if name not in masks:
+                raise KeyError(f"Missing mask for parameter {name!r}")
+            mask = torch.as_tensor(masks[name], device=p.device, dtype=p.dtype)
+            p.mul_(mask)
+
+
+def _zero_optimizer_state_(optimizer, model, masks):
+    """Remove optimizer momentum/variance on pruned coordinates."""
+    for name, p in model.named_parameters():
+        if name not in masks:
+            raise KeyError(f"Missing mask for parameter {name!r}")
+        state = optimizer.state.get(p)
+        if not state:
+            continue
+        mask = torch.as_tensor(masks[name], device=p.device, dtype=p.dtype)
+        for key in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
+            if key in state and torch.is_tensor(state[key]):
+                state[key].mul_(mask)
+
+
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
-    dataset_name: str = _env_str("DATASET", "parabola")
+    # dataset_name: str = _env_str("DATASET", "parabola")
+    dataset_name: str = _env_str("DATASET", "symmetric_vector_field")
 
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
@@ -76,13 +114,13 @@ class Config:
     n_hidden: int = _env_int("N_HIDDEN", 3)
     hidden_width: int = _env_int("HIDDEN_WIDTH", 32)
     lr: float = _env_float("LR", 1e-2)
-    epochs: int = _env_int("EPOCHS", 10000)
+    epochs: int = _env_int("EPOCHS", 5000)
     checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
 
-    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 5e-4)
-    prune_mode: str = _env_str("PRUNE_MODE", "zero")
+    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-3)
+    prune_mode: str = _env_str("PRUNE_MODE", "zero") # Modifications have been made to the below script to only work with zero mode
 
     # Learning rate scheduler: linear warm-up -> cosine decay (no restarts)
     # eta_min: minimum LR floor at the end of the cosine decay
@@ -216,11 +254,10 @@ criterion = nn.MSELoss()
 
 from utilities import compute_covariance_from_model, sensitivity_scores_from_model
 C_init = compute_covariance_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
-S_init = sensitivity_scores_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
+S_init_full = sensitivity_scores_from_model(initial_model, x_sens, chunk_size=cfg.jacobian_chunk_size)
 J_init = None  # no longer needed for downstream plots
-init_topk_idx = topk_indices(S_init, cfg.topk_frac)
 
-S_init_param = reduce_sensitivity_to_parameter_level(initial_model, S_init)
+S_init_param = reduce_sensitivity_to_parameter_level(initial_model, S_init_full)
 S_init_param_flat = _flatten_parameter_sensitivity_like_model(initial_model, S_init_param)
 
 if cfg.prune_mode not in {"freeze", "zero"}:
@@ -233,7 +270,12 @@ param_masks, unit_masks, mask_hooks = prune_sensitive_subnetwork_mlp(
     mode=cfg.prune_mode,
 )
 
+active_param_mask_flat = _flatten_parameter_mask_like_model(model, param_masks).bool()
+active_param_count = int(active_param_mask_flat.sum().item())
+_apply_parameter_mask_(model, param_masks)
 
+S_init_active = S_init_param_flat[active_param_mask_flat]
+init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
 
 # Keep the optimiser after pruning so it only tracks the retained network.
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
@@ -316,6 +358,8 @@ for epoch in range(cfg.epochs + 1):
     loss = task_loss + cfg.l1_lambda * l1_penalty
     loss.backward()
     optimizer.step()
+    _apply_parameter_mask_(model, param_masks)
+    _zero_optimizer_state_(optimizer, model, param_masks)
     scheduler.step()         # advance LR schedule every epoch
 
     if epoch % cfg.checkpoint_interval == 0 or epoch == cfg.epochs:
@@ -336,11 +380,12 @@ for epoch in range(cfg.epochs + 1):
 
         for Jc in iter_jacobian_chunks(model, x_sens, chunk_size=cfg.jacobian_chunk_size):
             # Jc: [chunk, n_params]  (single-output) or [chunk, n_outputs, n_params]
-            sq_sum = Jc.pow(2).sum(dim=0) if sq_sum is None else sq_sum + Jc.pow(2).sum(dim=0)
-            abs_c = Jc.abs().mean(dim=0) * Jc.shape[0]   # weighted sum over chunk
+            Jc_active = Jc[..., active_param_mask_flat]
+            sq_sum = Jc_active.pow(2).sum(dim=0) if sq_sum is None else sq_sum + Jc_active.pow(2).sum(dim=0)
+            abs_c = Jc_active.abs().mean(dim=0) * Jc_active.shape[0]   # weighted sum over chunk
             abs_sum = abs_c if abs_sum is None else abs_sum + abs_c
             if need_cov:
-                flat = Jc if Jc.ndim == 2 else Jc.flatten(start_dim=1)
+                flat = Jc_active if Jc_active.ndim == 2 else Jc_active.flatten(start_dim=1)
                 C_acc = flat.T @ flat if C_acc is None else C_acc + flat.T @ flat
             N_jac += Jc.shape[0]
 
@@ -348,7 +393,7 @@ for epoch in range(cfg.epochs + 1):
         mean_abs_sens = (abs_sum / N_jac).detach().cpu().numpy()
         mean_abs_sens = np.atleast_2d(mean_abs_sens)   # ensure [n_outputs, n_params]
 
-        rho_init_curr = spearman_corr(S_init, S_curr)
+        rho_init_curr = spearman_corr(S_init_active, S_curr)
         init_topk_mass = mass_on_indices(S_curr, init_topk_idx)
 
         rho_ref_curr = np.nan
@@ -395,9 +440,13 @@ J_final = compute_parameter_jacobian(model, x_sens, chunk_size=cfg.jacobian_chun
 C_final = compute_covariance(J_final)
 S_final = sensitivity_scores(J_final)
 
-eig_init = eigvals_from_covariance(C_init)
-eig_final = eigvals_from_covariance(C_final)
-eig_ref = eigvals_from_covariance(C_ref) if S_ref is not None else None
+C_init_active = C_init[active_param_mask_flat][:, active_param_mask_flat]
+C_final_active = C_final[active_param_mask_flat][:, active_param_mask_flat]
+C_ref_active = C_ref if S_ref is not None else None
+
+eig_init = eigvals_from_covariance(C_init_active)
+eig_final = eigvals_from_covariance(C_final_active)
+eig_ref = eigvals_from_covariance(C_ref_active) if C_ref_active is not None else None
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
@@ -422,6 +471,9 @@ ACCENT_PURPLE = "#8172B3"
 ACCENT_GRAY = "#6C757D"
 
 param_location_labels, param_location_colours, param_location_unique, param_location_colour_map, param_location_spans = parameter_location_metadata(model)
+param_location_colours = np.asarray(param_location_colours)
+active_param_mask_np = active_param_mask_flat.detach().cpu().numpy().astype(bool)
+active_param_location_colours = param_location_colours[active_param_mask_np]
 run_tag = f"{spec.name}_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width"
 
 # ============================================================
@@ -542,7 +594,7 @@ if eig_ref is not None:
     ax.plot(eig_ref.detach().cpu().numpy(), label=f"ref @ epoch {ref_epoch}", color=ACCENT_PURPLE, linestyle="--")
 ax.plot(eig_final.detach().cpu().numpy(), label="final", color=ACCENT_ORANGE)
 ax.set_yscale("log")
-ax.set_title(f"Sensitivity covariance eigenspectrum (effective rank = {effective_rank(eig_final):.2f})")
+ax.set_title(f"Active-subnet sensitivity covariance eigenspectrum (effective rank = {effective_rank(eig_final):.2f})")
 ax.set_xlabel("Parameter index")
 ax.set_ylabel("Eigenvalue")
 prettify_axes(ax)
@@ -560,17 +612,19 @@ prettify_axes(ax)
 beautify_legend(ax, loc="best")
 save_pub_figure(fig, output_dir / f"Loss_Evolution_{run_tag}.pdf")
 
-fig, ax = plt.subplots(figsize=(7.4, 4.0), constrained_layout=False)
-ax.plot(history["epoch"], history["lr"], color=ACCENT_TEAL)
-ax.set_yscale("log")
-ax.set_title("Learning rate schedule")
-ax.set_xlabel("Epoch")
-ax.set_ylabel("Learning rate")
-prettify_axes(ax)
-save_pub_figure(fig, output_dir / f"LR_Schedule_{run_tag}.pdf")
+# fig, ax = plt.subplots(figsize=(7.4, 4.0), constrained_layout=False)
+# ax.plot(history["epoch"], history["lr"], color=ACCENT_TEAL)
+# ax.set_yscale("log")
+# ax.set_title("Learning rate schedule")
+# ax.set_xlabel("Epoch")
+# ax.set_ylabel("Learning rate")
+# prettify_axes(ax)
+# save_pub_figure(fig, output_dir / f"LR_Schedule_{run_tag}.pdf")
 
-S_init_dist = S_init.detach().cpu().numpy()
-S_final_dist = S_final.detach().cpu().numpy()
+S_init_dist = S_init_active.detach().cpu().numpy()
+S_final_param = reduce_sensitivity_to_parameter_level(model, S_final)
+S_final_param_flat = _flatten_parameter_sensitivity_like_model(model, S_final_param)
+S_final_dist = S_final_param_flat[active_param_mask_flat].detach().cpu().numpy()
 positive_vals = np.concatenate([S_init_dist[S_init_dist > 0], S_final_dist[S_final_dist > 0]])
 positive_vals = positive_vals[np.isfinite(positive_vals)]
 bins = np.logspace(np.log10(positive_vals.min()), np.log10(positive_vals.max()), 50) if positive_vals.size else 50
@@ -579,17 +633,18 @@ ax.hist(S_init_dist, bins=bins, density=True, alpha=0.42, label="initial", histt
 ax.hist(S_final_dist, bins=bins, density=True, alpha=0.42, label="final", histtype="stepfilled", edgecolor=ACCENT_ORANGE, linewidth=0.9, color=ACCENT_ORANGE)
 ax.set_xscale("log")
 ax.set_yscale("log")
-ax.set_title("Distribution of sensitivities")
+ax.set_title("Active-subnet sensitivity distribution")
 ax.set_xlabel("Sensitivity")
 ax.set_ylabel("Density")
 prettify_axes(ax)
 beautify_legend(ax, loc="best")
 save_pub_figure(fig, output_dir / f"Sensitivity_Distribution_Initial_vs_Final_{run_tag}.pdf")
 
-param_mag_init = flatten_param_magnitudes(initial_model)
-param_mag_final = flatten_param_magnitudes(model)
-sens_init_red = reduce_sensitivity_to_parameter_level(initial_model, S_init)
-sens_final_red = reduce_sensitivity_to_parameter_level(model, S_final)
+param_mag_init = flatten_param_magnitudes(initial_model)[active_param_mask_flat]
+param_mag_final = flatten_param_magnitudes(model)[active_param_mask_flat]
+
+sens_init_red = S_init_param_flat[active_param_mask_flat]
+sens_final_red = S_final_param_flat[active_param_mask_flat]
 eps = 1e-30
 
 fig, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(14.0, 6.0), constrained_layout=True)
@@ -598,12 +653,12 @@ ax_before.scatter(
     param_mag_init.clamp_min(eps).cpu().numpy(),
     sens_init_red.clamp_min(eps).cpu().numpy(),
     s=12, alpha=0.55, marker="o", linewidths=0.0,
-    c=param_location_colours, rasterized=True,
+    c=active_param_location_colours, rasterized=True,
 )
 add_parameter_location_legend(ax_before, param_location_unique, param_location_colour_map, loc="best")
 ax_before.set_xscale("log")
 ax_before.set_yscale("log")
-ax_before.set_title("Before training")
+ax_before.set_title("Before training (active subnet)")
 ax_before.set_xlabel(r"$|\theta_i|$")
 ax_before.set_ylabel(r"$S(\theta_i)$")
 prettify_axes(ax_before)
@@ -612,12 +667,12 @@ ax_after.scatter(
     param_mag_final.clamp_min(eps).cpu().numpy(),
     sens_final_red.clamp_min(eps).cpu().numpy(),
     s=12, alpha=0.55, marker="o", linewidths=0.0,
-    c=param_location_colours, rasterized=True,
+    c=active_param_location_colours, rasterized=True,
 )
 add_parameter_location_legend(ax_after, param_location_unique, param_location_colour_map, loc="best")
 ax_after.set_xscale("log")
 ax_after.set_yscale("log")
-ax_after.set_title("After training")
+ax_after.set_title("After training (active subnet)")
 ax_after.set_xlabel(r"$|\theta_i|$")
 ax_after.set_ylabel(r"$S(\theta_i)$")
 prettify_axes(ax_after)
@@ -654,12 +709,12 @@ try:
     from sklearn.manifold import Isomap, TSNE
     from sklearn.preprocessing import StandardScaler
 
-    J_np = J_final.detach().cpu().numpy()
-    C_np = C_final.detach().cpu().numpy()
-    S_np = S_final.detach().cpu().numpy()
+    J_np = J_final.detach().cpu().numpy()[:, active_param_mask_np]
+    C_np = C_final_active.detach().cpu().numpy()
+    S_np = S_final.detach().cpu().numpy()[active_param_mask_np]
     J_param = J_np.T
     J_scaled = StandardScaler().fit_transform(J_param)
-    analysis_colours = np.resize(param_location_colours, J_scaled.shape[0])
+    analysis_colours = np.resize(active_param_location_colours, J_scaled.shape[0])
 
     print("\nLow-dimensional structure diagnostics")
     print("=====================================")
@@ -686,16 +741,16 @@ try:
         save_pub_figure(fig, output_dir / f"Jacobian_PCA_Projection_{run_tag}.pdf")
 
     if cfg.run_manifold and J_scaled.shape[0] > 3:
-        isomap = Isomap(n_components=2, n_neighbors=min(20, max(2, J_scaled.shape[0] - 1)))
-        J_iso = isomap.fit_transform(J_scaled)
-        fig, ax = plt.subplots(figsize=(6.5, 6.0))
-        ax.scatter(J_iso[:, 0], J_iso[:, 1], s=10, alpha=0.65, c=analysis_colours, rasterized=True)
-        add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
-        ax.set_title("Parameter-Jacobian Isomap embedding")
-        ax.set_xlabel("Component 1")
-        ax.set_ylabel("Component 2")
-        prettify_axes(ax)
-        save_pub_figure(fig, output_dir / f"Jacobian_Isomap_Embedding_{run_tag}.pdf")
+        # isomap = Isomap(n_components=2, n_neighbors=min(20, max(2, J_scaled.shape[0] - 1)))
+        # J_iso = isomap.fit_transform(J_scaled)
+        # fig, ax = plt.subplots(figsize=(6.5, 6.0))
+        # ax.scatter(J_iso[:, 0], J_iso[:, 1], s=10, alpha=0.65, c=analysis_colours, rasterized=True)
+        # add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
+        # ax.set_title("Parameter-Jacobian Isomap embedding")
+        # ax.set_xlabel("Component 1")
+        # ax.set_ylabel("Component 2")
+        # prettify_axes(ax)
+        # save_pub_figure(fig, output_dir / f"Jacobian_Isomap_Embedding_{run_tag}.pdf")
 
         tsne = TSNE(n_components=2, perplexity=min(30, max(1, (J_scaled.shape[0] - 1) // 3)), init="pca", learning_rate="auto", random_state=cfg.seed)
         J_tsne = tsne.fit_transform(J_scaled)
@@ -711,12 +766,12 @@ try:
     sort_idx = np.argsort(S_np)[::-1]
     fig, ax = plt.subplots(figsize=(7.0, 5.5))
     ax.scatter(np.arange(S_np.size), S_np[sort_idx], s=10, alpha=0.75,
-               c=np.resize(param_location_colours, S_np.size)[sort_idx],
+               c=np.resize(active_param_location_colours, S_np.size)[sort_idx],
                linewidths=0.0, rasterized=True)
     add_parameter_location_legend(ax, param_location_unique, param_location_colour_map, loc="best")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_title("Sorted sensitivity spectrum")
+    ax.set_title("Active-subnet sorted sensitivity spectrum")
     ax.set_xlabel("Parameter rank")
     ax.set_ylabel("Sensitivity")
     prettify_axes(ax)
@@ -745,6 +800,8 @@ with torch.no_grad():
     final_train_mse = criterion(model(x_train), y_train_clean).item()
     final_test_mse = criterion(model(x_test), y_test_clean).item()
 
+S_final_active = S_final[active_param_mask_flat]
+
 summary = {
     "dataset": spec.name,
     "target": spec.description,
@@ -753,6 +810,7 @@ summary = {
     "field_scale": cfg.field_scale,
     "noise_multiplier": cfg.noise_multiplier,
     "parameter_count": parameter_count(model),
+    "active_parameter_count": active_param_count,
     "pruned_parameter_count": _pruned_total,
     "pruned_parameter_percentage": _pruned_pct,
     "lr_scheduler": cfg.lr_scheduler,
@@ -763,11 +821,11 @@ summary = {
     "final_test_mse_clean": final_test_mse,
     "mean_grid_or_test_abs_error": mean_grid_error,
     "max_grid_or_test_abs_error": max_grid_error,
-    "final_spearman_init_final": spearman_corr(S_init, S_final),
-    "final_mass_in_init_topk": mass_on_indices(S_final, init_topk_idx),
+   "final_spearman_init_final": spearman_corr(S_init_active, S_final_active),
+    "final_mass_in_init_topk": mass_on_indices(S_final_active, init_topk_idx),
     "reference_epoch": ref_epoch if S_ref is not None else None,
-    "final_spearman_ref_final": spearman_corr(S_ref, S_final) if S_ref is not None else None,
-    "final_mass_in_ref_topk": mass_on_indices(S_final, ref_topk_idx) if S_ref is not None else None,
+    "final_spearman_ref_final": spearman_corr(S_ref, S_final_active) if S_ref is not None else None,
+    "final_mass_in_ref_topk": mass_on_indices(S_final_active, ref_topk_idx) if S_ref is not None else None,
     "largest_initial_eigenvalue": float(eig_init[0].item()),
     "largest_ref_eigenvalue": float(eig_ref[0].item()) if eig_ref is not None else None,
     "largest_final_eigenvalue": float(eig_final[0].item()),
