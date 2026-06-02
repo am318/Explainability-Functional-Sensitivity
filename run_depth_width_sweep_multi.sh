@@ -57,6 +57,34 @@ find_free_slot() {
   done
 }
 
+experiment_artifacts_exist() {
+  local dataset_dir="$1"
+  local dataset="$2"
+  local depth="$3"
+  local width="$4"
+
+  # Treat an existing completion marker as authoritative.
+  if [[ -f "${dataset_dir}/.done_${dataset}_d${depth}_w${width}" ]]; then
+    return 0
+  fi
+
+  # Skip if we already have files for this run in the output directory.
+  # This is intentionally broad so that rerunning the sweep does not repeat
+  # experiments that have already written their outputs.
+  if find "$dataset_dir" -maxdepth 1 -type f \
+      \( -name "*d${depth}*w${width}*" -o -name "*w${width}*d${depth}*" -o -name "*${dataset}*d${depth}*w${width}*" \) \
+      | grep -q .; then
+    return 0
+  fi
+
+  # Existing log files are also a strong signal that the experiment has already run.
+  if compgen -G "logs/${dataset}_d${depth}_w${width}_gpu*.log" > /dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
 launch_job() {
   local slot="$1"
   local gpu="${gpus[$slot]}"
@@ -75,14 +103,23 @@ launch_job() {
 
   mkdir -p "$dataset_dir"
   local log_file="logs/${dataset}_d${depth}_w${width}_gpu${gpu}.log"
+  local done_marker="${dataset_dir}/.done_${dataset}_d${depth}_w${width}"
+
+  if experiment_artifacts_exist "$dataset_dir" "$dataset" "$depth" "$width"; then
+    echo "Skipping dataset=${dataset} depth=${depth} width=${width} because output already exists"
+    return 0
+  fi
 
   echo "Launching dataset=${dataset} depth=${depth} width=${width} on GPU ${gpu} (slot ${slot})"
-  CUDA_VISIBLE_DEVICES="$gpu" \
-    DATASET="$dataset" \
-    OUTPUT_DIR="$dataset_dir" \
-    N_HIDDEN="$depth" \
-    HIDDEN_WIDTH="$width" \
-    python "$SWEEP_SCRIPT" >"$log_file" 2>&1 &
+  (
+    CUDA_VISIBLE_DEVICES="$gpu" \
+      DATASET="$dataset" \
+      OUTPUT_DIR="$dataset_dir" \
+      N_HIDDEN="$depth" \
+      HIDDEN_WIDTH="$width" \
+      python "$SWEEP_SCRIPT" >"$log_file" 2>&1 &&
+      touch "$done_marker"
+  ) &
   pids[$slot]=$!
 }
 

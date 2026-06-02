@@ -2,4 +2,4 @@ venv
 __pycache__
 *.pdf
 *.json
-test
+*.log
