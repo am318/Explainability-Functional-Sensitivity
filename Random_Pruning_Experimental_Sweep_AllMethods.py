@@ -38,6 +38,11 @@ from utilities import (
 
 from plotting_utilities import *
 from subnetwork import prune_sensitive_subnetwork_mlp
+from pruning_baselines import (
+    build_snip_masks,
+    build_grasp_masks,
+    build_synflow_masks,
+)
 
 
 def _env_int(name, default):
@@ -101,12 +106,51 @@ def _zero_optimizer_state_(optimizer, model, masks):
                 state[key].mul_(mask)
 
 
+def _compute_mask_pruning_percentage(masks):
+    """Return the pruned percentage implied by a parameter-mask dict."""
+    pruned_total = 0
+    retained_total = 0
+    for _name, _mask in masks.items():
+        _mask_bool = torch.as_tensor(_mask, dtype=torch.bool)
+        retained_total += int(_mask_bool.sum().item())
+        pruned_total += int(_mask_bool.numel() - _mask_bool.sum().item())
+    pruned_pct = 100.0 * pruned_total / max(1, (pruned_total + retained_total))
+    return pruned_total, retained_total, pruned_pct
+
+
+def _build_global_random_masks_like_model(model, pruned_fraction, generator=None):
+    """Build an exact global unstructured random mask with a target prune fraction."""
+    if not 0.0 <= pruned_fraction <= 1.0:
+        raise ValueError(f"pruned_fraction must be in [0, 1], got {pruned_fraction}")
+
+    named_params = list(model.named_parameters())
+    sizes = [p.numel() for _name, p in named_params]
+    total_params = int(sum(sizes))
+    n_pruned = int(round(pruned_fraction * total_params))
+    n_pruned = max(0, min(total_params, n_pruned))
+
+    flat_mask = torch.ones(total_params, dtype=torch.bool, device="cpu")
+    if n_pruned > 0:
+        perm = torch.randperm(total_params, generator=generator, device="cpu")
+        flat_mask[perm[:n_pruned]] = False
+
+    masks = {}
+    offset = 0
+    for name, p in named_params:
+        n = p.numel()
+        masks[name] = flat_mask[offset:offset + n].view_as(p).clone()
+        offset += n
+    return masks, n_pruned, total_params
+
+
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
     # dataset_name: str = _env_str("DATASET", "parabola")
     dataset_name: str = _env_str("DATASET", "morse_vector_field")
-    
+
+    # Not grasp
+
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)
@@ -119,7 +163,7 @@ class Config:
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     l1_lambda: float = _env_float("L1_LAMBDA", 1e-3)
 
-    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-1) #1e-4
+    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-1)
     prune_mode: str = _env_str("PRUNE_MODE", "zero") # Modifications have been made to the below script to only work with zero mode
 
     # Learning rate scheduler: linear warm-up -> cosine decay (no restarts)
@@ -138,6 +182,7 @@ class Config:
     plot_grid_size: int = _env_int("PLOT_GRID_SIZE", 45)
     jacobian_chunk_size: int = _env_int("JACOBIAN_CHUNK_SIZE", 4096)
     run_manifold: bool = _env_int("RUN_MANIFOLD", 1) != 0
+    pruning_method: str = _env_str("PRUNING_METHOD", "sensitivity")
 
     def __post_init__(self):
         self.checkpoint_interval = self.epochs // self.checkpoint_interval
@@ -263,20 +308,58 @@ S_init_param_flat = _flatten_parameter_sensitivity_like_model(initial_model, S_i
 if cfg.prune_mode not in {"freeze", "zero"}:
     raise ValueError(f"PRUNE_MODE must be 'freeze' or 'zero', got {cfg.prune_mode!r}")
 
-param_masks, unit_masks, mask_hooks = prune_sensitive_subnetwork_mlp(
-    model,
+
+# Measure sparsity induced by sensitivity pruning
+sensitivity_probe_model = copy.deepcopy(initial_model)
+sensitivity_masks, _, _ = prune_sensitive_subnetwork_mlp(
+    sensitivity_probe_model,
     S_init_param_flat,
     threshold=cfg.prune_threshold,
     mode=cfg.prune_mode,
 )
+
+(
+    sensitivity_pruned_total,
+    sensitivity_retained_total,
+    sensitivity_pruned_pct,
+) = _compute_mask_pruning_percentage(sensitivity_masks)
+
+target_sparsity = (
+    sensitivity_pruned_total
+    / max(1, (sensitivity_pruned_total + sensitivity_retained_total))
+)
+
+if cfg.pruning_method == "sensitivity":
+    param_masks = sensitivity_masks
+
+elif cfg.pruning_method == "snip":
+    param_masks = build_snip_masks(
+        model, x_train, y_train, criterion, target_sparsity
+    )
+
+elif cfg.pruning_method == "grasp":
+    param_masks = build_grasp_masks(
+        model, x_train, y_train, criterion, target_sparsity
+    )
+
+elif cfg.pruning_method == "synflow":
+    param_masks = build_synflow_masks(
+        model, target_sparsity, (1, input_dim)
+    )
+else:
+    raise ValueError(f"Unknown PRUNING_METHOD={cfg.pruning_method}")
 
 active_param_mask_flat = _flatten_parameter_mask_like_model(model, param_masks).bool()
 active_param_count = int(active_param_mask_flat.sum().item())
 _apply_parameter_mask_(model, param_masks)
 
 S_init_active = S_init_param_flat[active_param_mask_flat]
-
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
+
+print(
+    f"Method={cfg.pruning_method} | matched sensitivity sparsity={sensitivity_pruned_pct:.2f}%"
+)
+
 
 # Keep the optimiser after pruning so it only tracks the retained network.
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
@@ -496,7 +579,7 @@ param_location_labels, param_location_colours, param_location_unique, param_loca
 param_location_colours = np.asarray(param_location_colours)
 active_param_mask_np = active_param_mask_flat.detach().cpu().numpy().astype(bool)
 active_param_location_colours = param_location_colours[active_param_mask_np]
-run_tag = f"{spec.name}_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width"
+run_tag = f"{cfg.pruning_method}_{spec.name}_{parameter_count(model)}_Parameters_{cfg.n_hidden}_Depth_{cfg.hidden_width}_Width"
 
 # ============================================================
 # Dataset-specific fit plots
@@ -819,13 +902,7 @@ except Exception as exc:
 # Pruning statistics for reporting.
 # ============================================================
 
-_pruned_total = 0
-_retained_total = 0
-for _name, _mask in param_masks.items():
-    _mask_bool = torch.as_tensor(_mask, dtype=torch.bool)
-    _retained_total += int(_mask_bool.sum().item())
-    _pruned_total += int(_mask_bool.numel() - _mask_bool.sum().item())
-_pruned_pct = 100.0 * _pruned_total / max(1, (_pruned_total + _retained_total))
+_pruned_total, _retained_total, _pruned_pct = _compute_mask_pruning_percentage(param_masks)
 
 # ============================================================
 # Final summary
@@ -848,8 +925,11 @@ summary = {
     "output_dim": output_dim,
     "field_scale": cfg.field_scale,
     "noise_multiplier": cfg.noise_multiplier,
+    "pruning_method": cfg.pruning_method,
     "parameter_count": parameter_count(model),
     "active_parameter_count": active_param_count,
+    "sensitivity_pruned_parameter_count": sensitivity_pruned_total,
+    "sensitivity_pruned_parameter_percentage": sensitivity_pruned_pct,
     "pruned_parameter_count": _pruned_total,
     "pruned_parameter_percentage": _pruned_pct,
     "lr_scheduler": cfg.lr_scheduler,

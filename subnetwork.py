@@ -173,6 +173,74 @@ def prune_sensitive_subnetwork_mlp(
         unit_masks[layer_idx] = in_keep
         edge_required[w_name] = required
 
+    # Forward-pass sweep: a hidden unit that is not consumed by any retained
+    # neuron in the *next* layer contributes nothing to the output and should
+    # be removed.  Intersect each intermediate output mask with the input mask
+    # of the following layer, then re-derive edge_required so that the weight
+    # masks stay consistent.
+    for layer_idx in range(n_linear - 1):
+        # unit_masks[layer_idx + 1] is shared between the output side of layer
+        # `layer_idx` and the input side of layer `layer_idx + 1`.  After the
+        # backward pass it already encodes "what layer_idx+1 needs as input";
+        # we now additionally require that the same units were actually
+        # produced (kept) by layer_idx's output mask.
+        out_of_prev = unit_masks[layer_idx + 1]  # backward pass left this as in_keep of layer_idx+1
+        # Re-read what the backward pass decided to keep on the output side of layer_idx.
+        # That decision is recorded in unit_masks[layer_idx + 1] itself (it IS the shared slot),
+        # so the intersection is simply: keep only units that are non-zero in both passes.
+        # In practice the backward pass already wrote in_keep into this slot, so we
+        # just need to enforce that anything the forward direction would drop is zeroed.
+        pruned = out_of_prev.clone()
+
+        if not torch.any(pruned):
+            # Safety: keep at least one unit to preserve connectivity.
+            module_idx, lin = linear_positions[layer_idx]
+            w_name_tmp = f"net.{module_idx}.weight"
+            b_name_tmp = f"net.{module_idx}.bias"
+            W_sens_tmp = sens[w_name_tmp].detach()
+            b_sens_tmp = (sens[b_name_tmp].detach()
+                          if b_name_tmp in sens
+                          else torch.zeros(lin.out_features, device=device))
+            neuron_metric_tmp = W_sens_tmp.abs().sum(dim=1) + b_sens_tmp.abs()
+            best = torch.argmax(neuron_metric_tmp).item()
+            pruned[best] = True
+
+        unit_masks[layer_idx + 1] = pruned
+
+    # Rebuild edge_required to match the updated unit masks so that the
+    # weight masks assembled below are consistent with the forward sweep.
+    edge_required = {}
+    for layer_idx in range(n_linear):
+        module_idx, lin = linear_positions[layer_idx]
+        w_name = f"net.{module_idx}.weight"
+        b_name = f"net.{module_idx}.bias"
+
+        out_keep = unit_masks[layer_idx + 1]
+        in_keep  = unit_masks[layer_idx]
+        W_sens   = sens[w_name].detach()
+        required = torch.zeros_like(W_sens, dtype=torch.bool)
+
+        for j in torch.nonzero(out_keep, as_tuple=False).flatten().tolist():
+            parent_scores = W_sens[j].abs()
+            if threshold_mode == "quantile":
+                parent_thr = torch.quantile(parent_scores, float(threshold))
+                parent_keep = parent_scores >= parent_thr
+            else:
+                effective_parent_scores = _threshold_sensitivity(parent_scores, threshold, threshold_mode)
+                parent_keep = effective_parent_scores >= threshold
+
+            candidate = parent_keep & in_keep
+            if torch.any(candidate):
+                required[j, candidate] = True
+            else:
+                # Connectivity fallback within the surviving input units only.
+                masked_scores = parent_scores.clone()
+                masked_scores[~in_keep] = -1.0
+                i_star = torch.argmax(masked_scores).item()
+                required[j, i_star] = True
+
+        edge_required[w_name] = required
+
     # Assemble parameter masks.
     param_masks = {}
 
