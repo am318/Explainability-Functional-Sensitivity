@@ -104,15 +104,14 @@ def _zero_optimizer_state_(optimizer, model, masks):
 @dataclass
 class Config:
     seed: int = _env_int("SEED", 0)
-    # dataset_name: str = _env_str("DATASET", "parabola")
-    dataset_name: str = _env_str("DATASET", "symmetric_vector_field")
+    dataset_name: str = _env_str("DATASET", "parabola")
 
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)
 
-    n_hidden: int = _env_int("N_HIDDEN", 3)
-    hidden_width: int = _env_int("HIDDEN_WIDTH", 32)
+    n_hidden: int = _env_int("N_HIDDEN", 2)
+    hidden_width: int = _env_int("HIDDEN_WIDTH", 8)
     lr: float = _env_float("LR", 1e-2)
     epochs: int = _env_int("EPOCHS", 5000)
     checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
@@ -379,14 +378,33 @@ for epoch in range(cfg.epochs + 1):
         need_cov = (S_ref is None) and (epoch >= cfg.compare_epoch)
 
         for Jc in iter_jacobian_chunks(model, x_sens, chunk_size=cfg.jacobian_chunk_size):
-            # Jc: [chunk, n_params]  (single-output) or [chunk, n_outputs, n_params]
+            # Recover [chunk, n_outputs, n_params]
+            if Jc.ndim == 2:
+                if Jc.shape[1] == output_dim * active_param_mask_flat.numel():
+                    Jc = Jc.view(Jc.shape[0], output_dim, -1)
+                elif Jc.shape[1] == active_param_mask_flat.numel():
+                    Jc = Jc[:, None, :]
+                else:
+                    raise RuntimeError(
+                        f"Unexpected Jacobian shape {tuple(Jc.shape)} for output_dim={output_dim} "
+                        f"and n_params={active_param_mask_flat.numel()}"
+                    )
+
+            # Now the mask matches the last axis
             Jc_active = Jc[..., active_param_mask_flat]
-            sq_sum = Jc_active.pow(2).sum(dim=0) if sq_sum is None else sq_sum + Jc_active.pow(2).sum(dim=0)
-            abs_c = Jc_active.abs().mean(dim=0) * Jc_active.shape[0]   # weighted sum over chunk
+
+            # Parameter-level sensitivity aggregated across outputs
+            sq_chunk = Jc_active.pow(2).sum(dim=0).sum(dim=0)   # [n_active]
+            sq_sum = sq_chunk if sq_sum is None else sq_sum + sq_chunk
+
+            # Keep per-output sensitivity for the heatmap
+            abs_c = Jc_active.abs().sum(dim=0)                  # [n_outputs, n_active]
             abs_sum = abs_c if abs_sum is None else abs_sum + abs_c
+
             if need_cov:
-                flat = Jc_active if Jc_active.ndim == 2 else Jc_active.flatten(start_dim=1)
+                flat = Jc_active.flatten(start_dim=1)           # [chunk, n_outputs * n_active]
                 C_acc = flat.T @ flat if C_acc is None else C_acc + flat.T @ flat
+
             N_jac += Jc.shape[0]
 
         S_curr = sq_sum / N_jac
@@ -440,8 +458,10 @@ J_final = compute_parameter_jacobian(model, x_sens, chunk_size=cfg.jacobian_chun
 C_final = compute_covariance(J_final)
 S_final = sensitivity_scores(J_final)
 
-C_init_active = C_init[active_param_mask_flat][:, active_param_mask_flat]
-C_final_active = C_final[active_param_mask_flat][:, active_param_mask_flat]
+cov_mask = active_param_mask_flat.repeat(output_dim)
+
+C_init_active = C_init[cov_mask][:, cov_mask]
+C_final_active = C_final[cov_mask][:, cov_mask]
 C_ref_active = C_ref if S_ref is not None else None
 
 eig_init = eigvals_from_covariance(C_init_active)
@@ -709,11 +729,24 @@ try:
     from sklearn.manifold import Isomap, TSNE
     from sklearn.preprocessing import StandardScaler
 
-    J_np = J_final.detach().cpu().numpy()[:, active_param_mask_np]
-    C_np = C_final_active.detach().cpu().numpy()
-    S_np = S_final.detach().cpu().numpy()[active_param_mask_np]
+    # Full Jacobian space: [n_samples, output_dim * n_params]
+    # Parameter mask must be expanded to match the flattened output-parameter axis.
+    cov_mask = np.repeat(active_param_mask_np, output_dim)
+
+    J_full = J_final.detach().cpu().numpy()
+    C_np = C_final.detach().cpu().numpy()
+
+    # Keep only active coordinates in the flattened Jacobian space.
+    J_np = J_full[:, cov_mask]
+
+    # Sensitivity must be reduced to parameter level before masking.
+    S_final_param = reduce_sensitivity_to_parameter_level(model, S_final)
+    S_final_param_flat = _flatten_parameter_sensitivity_like_model(model, S_final_param)
+    S_np = S_final_param_flat.detach().cpu().numpy()[active_param_mask_np]
+
     J_param = J_np.T
     J_scaled = StandardScaler().fit_transform(J_param)
+
     analysis_colours = np.resize(active_param_location_colours, J_scaled.shape[0])
 
     print("\nLow-dimensional structure diagnostics")
@@ -800,7 +833,11 @@ with torch.no_grad():
     final_train_mse = criterion(model(x_train), y_train_clean).item()
     final_test_mse = criterion(model(x_test), y_test_clean).item()
 
-S_final_active = S_final[active_param_mask_flat]
+S_final = sensitivity_scores(J_final)
+S_final_param = reduce_sensitivity_to_parameter_level(model, S_final)
+S_final_param_flat = _flatten_parameter_sensitivity_like_model(model, S_final_param)
+
+S_final_active = S_final_param_flat[active_param_mask_flat]
 
 summary = {
     "dataset": spec.name,
