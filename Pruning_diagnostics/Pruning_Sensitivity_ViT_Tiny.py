@@ -17,6 +17,7 @@ import json
 import math
 import os
 import random
+import pickle
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Tuple
@@ -36,11 +37,11 @@ except Exception:  # plotting is optional
 
 try:
     from torchvision import datasets, transforms
-except Exception as exc:
-    raise RuntimeError(
-        "This script requires torchvision for CIFAR loading. Install torchvision or "
-        "replace build_datasets() with your own dataset loader."
-    ) from exc
+    _TORCHVISION_AVAILABLE = True
+except Exception:
+    datasets = None
+    transforms = None
+    _TORCHVISION_AVAILABLE = False
 
 
 # -----------------------------------------------------------------------------
@@ -154,6 +155,153 @@ out_dir.mkdir(parents=True, exist_ok=True)
 # -----------------------------------------------------------------------------
 
 
+class _TensorTransformPipeline:
+    def __init__(self, image_size: int, mean, std, train: bool):
+        self.image_size = image_size
+        self.mean = torch.tensor(mean, dtype=torch.float32).view(3, 1, 1)
+        self.std = torch.tensor(std, dtype=torch.float32).view(3, 1, 1)
+        self.train = train
+
+    @staticmethod
+    def _pad(image: torch.Tensor, padding: int = 4) -> torch.Tensor:
+        return F.pad(image, (padding, padding, padding, padding), mode="reflect")
+
+    @staticmethod
+    def _random_crop(image: torch.Tensor, size: int) -> torch.Tensor:
+        _, h, w = image.shape
+        if h == size and w == size:
+            return image
+        if h < size or w < size:
+            raise ValueError(f"Cannot crop {size}x{size} from image of shape {(h, w)}")
+        top = random.randint(0, h - size)
+        left = random.randint(0, w - size)
+        return image[:, top:top + size, left:left + size]
+
+    @staticmethod
+    def _horizontal_flip(image: torch.Tensor, p: float = 0.5) -> torch.Tensor:
+        if random.random() < p:
+            return torch.flip(image, dims=(2,))
+        return image
+
+    @staticmethod
+    def _resize(image: torch.Tensor, size: int) -> torch.Tensor:
+        if image.shape[-1] == size and image.shape[-2] == size:
+            return image
+        return F.interpolate(image.unsqueeze(0), size=(size, size), mode="bilinear", align_corners=False).squeeze(0)
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        image = image.float() / 255.0
+        if self.train:
+            if self.image_size == 32:
+                image = self._pad(image, padding=4)
+                image = self._random_crop(image, 32)
+                image = self._horizontal_flip(image)
+            else:
+                image = self._resize(image, self.image_size)
+        else:
+            image = self._resize(image, self.image_size)
+        image = (image - self.mean) / self.std
+        return image
+
+
+class CIFAR10Dataset(torch.utils.data.Dataset):
+    """Minimal CIFAR-10 loader that does not depend on torchvision."""
+
+    base_folder = "cifar-10-batches-py"
+    train_files = [f"data_batch_{i}" for i in range(1, 6)]
+    test_files = ["test_batch"]
+    label_key = "labels"
+
+    def __init__(self, root: str, train: bool, transform=None, download: bool = False):
+        self.root = Path(root)
+        self.train = train
+        self.transform = transform
+        self.data, self.targets = self._load(download=download)
+
+    def _load(self, download: bool = False):
+        folder = self.root / self.base_folder
+        files = self.train_files if self.train else self.test_files
+        if not folder.exists():
+            raise FileNotFoundError(
+                f"Could not find {folder}. Set DOWNLOAD=1 or place the extracted CIFAR-10 files there."
+            )
+        data = []
+        targets = []
+        for filename in files:
+            path = folder / filename
+            if not path.exists():
+                raise FileNotFoundError(f"Missing CIFAR-10 file: {path}")
+            with open(path, "rb") as f:
+                entry = pickle.load(f, encoding="latin1")
+            batch = entry.get("data")
+            if batch is None:
+                raise RuntimeError(f"Invalid CIFAR-10 batch format in {path}")
+            data.append(batch.reshape(-1, 3, 32, 32))
+            targets.extend(entry[self.label_key])
+        data = np.concatenate(data, axis=0)
+        return data, targets
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, index):
+        image = torch.from_numpy(self.data[index])
+        target = int(self.targets[index])
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, target
+
+
+class CIFAR100Dataset(torch.utils.data.Dataset):
+    """Minimal CIFAR-100 loader that does not depend on torchvision."""
+
+    base_folder = "cifar-100-python"
+    train_files = ["train"]
+    test_files = ["test"]
+    label_key = "fine_labels"
+
+    def __init__(self, root: str, train: bool, transform=None, download: bool = False):
+        self.root = Path(root)
+        self.train = train
+        self.transform = transform
+        self.data, self.targets = self._load(download=download)
+
+    def _load(self, download: bool = False):
+        folder = self.root / self.base_folder
+        files = self.train_files if self.train else self.test_files
+        if not folder.exists():
+            raise FileNotFoundError(
+                f"Could not find {folder}. Set DOWNLOAD=1 or place the extracted CIFAR-100 files there."
+            )
+        data = []
+        targets = []
+        for filename in files:
+            path = folder / filename
+            if not path.exists():
+                raise FileNotFoundError(f"Missing CIFAR-100 file: {path}")
+            with open(path, "rb") as f:
+                entry = pickle.load(f, encoding="latin1")
+            batch = entry.get("data")
+            if batch is None:
+                raise RuntimeError(f"Invalid CIFAR-100 batch format in {path}")
+            data.append(batch.reshape(-1, 3, 32, 32))
+            targets.extend(entry[self.label_key])
+        data = np.concatenate(data, axis=0)
+        return data, targets
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, index):
+        image = torch.from_numpy(self.data[index])
+        target = int(self.targets[index])
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, target
+
+
+
+
 def _subset(dataset, n: int, seed: int):
     if n <= 0 or n >= len(dataset):
         return dataset
@@ -169,22 +317,19 @@ def build_datasets(cfg: Config):
     }
     mean, std = mean_std[cfg.dataset.upper()]
 
-    train_tfms = transforms.Compose([
-        transforms.RandomCrop(cfg.image_size, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
-    eval_tfms = transforms.Compose([
-        transforms.Resize((cfg.image_size, cfg.image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std),
-    ])
+    train_tfms = _TensorTransformPipeline(cfg.image_size, mean, std, train=True)
+    eval_tfms = _TensorTransformPipeline(cfg.image_size, mean, std, train=False)
 
-    ds_cls = datasets.CIFAR10 if cfg.dataset.upper() == "CIFAR10" else datasets.CIFAR100
-    train_set = ds_cls(cfg.data_dir, train=True, transform=train_tfms, download=cfg.download)
-    sens_set = ds_cls(cfg.data_dir, train=True, transform=eval_tfms, download=cfg.download)
-    test_set = ds_cls(cfg.data_dir, train=False, transform=eval_tfms, download=cfg.download)
+    if _TORCHVISION_AVAILABLE:
+        ds_cls = datasets.CIFAR10 if cfg.dataset.upper() == "CIFAR10" else datasets.CIFAR100
+        train_set = ds_cls(cfg.data_dir, train=True, transform=train_tfms, download=cfg.download)
+        sens_set = ds_cls(cfg.data_dir, train=True, transform=eval_tfms, download=cfg.download)
+        test_set = ds_cls(cfg.data_dir, train=False, transform=eval_tfms, download=cfg.download)
+    else:
+        ds_cls = CIFAR10Dataset if cfg.dataset.upper() == "CIFAR10" else CIFAR100Dataset
+        train_set = ds_cls(cfg.data_dir, train=True, transform=train_tfms, download=cfg.download)
+        sens_set = ds_cls(cfg.data_dir, train=True, transform=eval_tfms, download=cfg.download)
+        test_set = ds_cls(cfg.data_dir, train=False, transform=eval_tfms, download=cfg.download)
 
     train_set = _subset(train_set, cfg.train_subset, cfg.seed)
     sens_set = _subset(sens_set, cfg.sensitivity_samples, cfg.seed + 1)
@@ -540,35 +685,34 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
     return {"loss": loss_sum / max(1, n), "accuracy": acc_sum / max(1, n)}
 
 
-def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Config):
+def compute_epoch_lr(epoch: int, cfg: Config) -> float:
+    """Warmup followed by cosine decay, expressed explicitly to avoid scheduler warnings."""
     if cfg.epochs <= 0:
-        return None
+        return cfg.min_lr
+
     warmup_epochs = min(cfg.warmup_epochs, cfg.epochs)
+    if warmup_epochs > 0 and epoch <= warmup_epochs:
+        start = cfg.lr * 1e-3
+        progress = (epoch - 1) / max(1, warmup_epochs - 1)
+        return start + (cfg.lr - start) * progress
+
     decay_epochs = max(1, cfg.epochs - warmup_epochs)
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=decay_epochs, eta_min=cfg.min_lr)
-    if warmup_epochs > 0:
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=1e-3,
-            end_factor=1.0,
-            total_iters=warmup_epochs,
-        )
-        return torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup, cosine],
-            milestones=[warmup_epochs],
-        )
-    return cosine
+    decay_progress = (epoch - warmup_epochs) / decay_epochs
+    cosine_factor = 0.5 * (1.0 + math.cos(math.pi * min(1.0, decay_progress)))
+    return cfg.min_lr + (cfg.lr - cfg.min_lr) * cosine_factor
 
 
 criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-scheduler = build_scheduler(optimizer, cfg)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
 
 history = []
 
 for epoch in range(1, cfg.epochs + 1):
+    epoch_lr = compute_epoch_lr(epoch, cfg)
+    for group in optimizer.param_groups:
+        group["lr"] = epoch_lr
+
     model.train()
     loss_sum = 0.0
     acc_sum = 0.0
@@ -598,8 +742,6 @@ for epoch in range(1, cfg.epochs + 1):
         acc_sum += accuracy(logits.detach(), targets) * bsz
         n += bsz
 
-    if scheduler is not None:
-        scheduler.step()
 
     train_metrics = {"loss": loss_sum / max(1, n), "accuracy": acc_sum / max(1, n)}
     should_eval = (epoch == 1) or (epoch % cfg.checkpoint_interval == 0) or (epoch == cfg.epochs)
@@ -642,19 +784,6 @@ summary = {
 summary_path = out_dir / "vit_sensitivity_pruning_summary.json"
 with open(summary_path, "w", encoding="utf-8") as f:
     json.dump(summary, f, indent=2)
-
-checkpoint_path = out_dir / "vit_sensitivity_pruned_final.pt"
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "initial_state_dict": initial_state,
-        "masks": {k: v.detach().cpu() for k, v in masks.items()},
-        "sensitivity_scores": sensitivity_scores,
-        "config": asdict(cfg),
-        "summary": summary,
-    },
-    checkpoint_path,
-)
 
 if plt is not None and history:
     epochs = [h["epoch"] for h in history]
