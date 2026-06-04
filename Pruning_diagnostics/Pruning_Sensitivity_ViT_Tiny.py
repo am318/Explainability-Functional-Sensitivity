@@ -189,7 +189,10 @@ class _TensorTransformPipeline:
             return image
         return F.interpolate(image.unsqueeze(0), size=(size, size), mode="bilinear", align_corners=False).squeeze(0)
 
-    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+    def __call__(self, image) -> torch.Tensor:
+        # torchvision CIFAR datasets yield PIL Images; the custom loaders yield tensors.
+        if not isinstance(image, torch.Tensor):
+            image = torch.from_numpy(np.array(image, copy=True)).permute(2, 0, 1)
         image = image.float() / 255.0
         if self.train:
             if self.image_size == 32:
