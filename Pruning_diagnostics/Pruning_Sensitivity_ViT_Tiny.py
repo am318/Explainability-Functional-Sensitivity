@@ -433,9 +433,6 @@ def broadcast_bool_tensor(tensor: torch.Tensor, src: int = 0) -> torch.Tensor:
 # ============================================================
 # Pruning utilities
 # ============================================================
-# ============================================================
-# Pruning utilities
-# ============================================================
 
 
 def parameter_count(model: nn.Module) -> int:
@@ -919,11 +916,25 @@ def plot_curvature_proxy(flat_scores: torch.Tensor, output_dir: Path) -> float:
 # ============================================================
 
 
-def set_reproducibility(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def set_reproducibility(seed: int, local_rank: int = 0) -> None:
+    """Seed all RNGs.
+
+    IMPORTANT: torch.cuda.manual_seed_all() must only be called AFTER
+    torch.cuda.set_device() has been called for this process.  Calling it
+    earlier initialises the CUDA context on the wrong device (always device 0),
+    which leaves every non-zero rank with a stale cuBLAS/cuBLASLt handle and
+    causes the 'Invalid handle. Cannot load symbol cublasLtGetVersion' abort
+    during the first backward pass.
+    """
+    random.seed(seed + local_rank)
+    np.random.seed(seed + local_rank)
+    torch.manual_seed(seed + local_rank)
+    if torch.cuda.is_available():
+        # The CUDA context for this rank must already be bound to the correct
+        # device (via torch.cuda.set_device inside setup_runtime) before this
+        # call.  setup_runtime() is therefore always called before
+        # set_reproducibility().
+        torch.cuda.manual_seed_all(seed + local_rank)
     torch.backends.cudnn.benchmark = True
 
 
@@ -934,8 +945,16 @@ def choose_device(cfg: Config) -> torch.device:
 
 def main() -> None:
     cfg = Config()
-    set_reproducibility(cfg.seed)
+    # setup_runtime MUST come before set_reproducibility.
+    # setup_runtime calls torch.cuda.set_device(local_rank), which binds the
+    # CUDA context for this process to the correct device.
+    # set_reproducibility then calls torch.cuda.manual_seed_all(), which must
+    # see that binding or it silently initialises cuBLAS on device 0 for every
+    # rank, leaving non-zero ranks with stale handles and causing the
+    # 'Invalid handle. Cannot load symbol cublasLtGetVersion' abort on the
+    # first backward pass.
     device, distributed, local_rank = setup_runtime(cfg)
+    set_reproducibility(cfg.seed, local_rank)
     rank = get_rank()
     world_size = get_world_size()
     output_dir = Path(cfg.output_dir)
@@ -982,6 +1001,13 @@ def main() -> None:
         init_scores = None
         flat_init_prunable = None
         flat_mask = None
+    # Non-rank-0 processes must wait here while rank-0 runs backprop for
+    # sensitivity.  Without this barrier they race into DDP construction and
+    # trigger NCCL collectives while rank-0 still holds the CUDA compute
+    # stream for the sensitivity backward pass, causing a deadlock or a
+    # second cuBLAS handle corruption.
+    if distributed:
+        dist.barrier()
 
     if is_main_process():
         flat_keep = build_sensitivity_keep_vector(model, init_scores, cfg)
