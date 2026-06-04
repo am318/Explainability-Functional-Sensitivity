@@ -785,6 +785,19 @@ summary_path = out_dir / "vit_sensitivity_pruning_summary.json"
 with open(summary_path, "w", encoding="utf-8") as f:
     json.dump(summary, f, indent=2)
 
+checkpoint_path = out_dir / "vit_sensitivity_pruned_final.pt"
+torch.save(
+    {
+        "model_state_dict": model.state_dict(),
+        "initial_state_dict": initial_state,
+        "masks": {k: v.detach().cpu() for k, v in masks.items()},
+        "sensitivity_scores": sensitivity_scores,
+        "config": asdict(cfg),
+        "summary": summary,
+    },
+    checkpoint_path,
+)
+
 if plt is not None and history:
     epochs = [h["epoch"] for h in history]
     fig, ax = plt.subplots(figsize=(7.0, 4.5))
