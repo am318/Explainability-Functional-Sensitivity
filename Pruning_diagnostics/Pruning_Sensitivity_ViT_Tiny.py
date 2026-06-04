@@ -314,14 +314,19 @@ def make_dataloaders(
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
     ])
 
-    if distributed and rank != 0:
-        dist.barrier()
-    download = (not distributed) or rank == 0
-    train_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=train_tf, download=download)
-    test_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=False, transform=eval_tf, download=download)
-    sens_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=eval_tf, download=download)
-    if distributed and rank == 0:
-        dist.barrier()
+    # Only rank-0 downloads; all other ranks wait at the barrier so they don't
+    # race to create the directory or download the archive simultaneously.
+    if distributed:
+        if rank == 0:
+            torchvision.datasets.CIFAR10(cfg.data_dir, train=True,  download=True)
+            torchvision.datasets.CIFAR10(cfg.data_dir, train=False, download=True)
+            dist.barrier()   # signal: download complete
+        else:
+            dist.barrier()   # wait for rank-0 to finish
+
+    train_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True,  transform=train_tf, download=(not distributed))
+    test_ds  = torchvision.datasets.CIFAR10(cfg.data_dir, train=False, transform=eval_tf,  download=(not distributed))
+    sens_ds  = torchvision.datasets.CIFAR10(cfg.data_dir, train=True,  transform=eval_tf,  download=(not distributed))
 
     rng = np.random.default_rng(cfg.seed)
     if cfg.n_train_subset > 0:
@@ -396,7 +401,18 @@ def setup_runtime(cfg: Config) -> Tuple[torch.device, bool, int]:
         local_rank = int(os.environ.get('LOCAL_RANK', '0'))
         if not torch.cuda.is_available():
             raise RuntimeError('Distributed mode is configured, but CUDA is not available.')
+        # CRITICAL: set_device BEFORE init_process_group.
+        # Calling init_process_group (which triggers NCCL) before the CUDA
+        # context is associated with the correct device causes cuBLAS/cuBLASLt
+        # to initialise against the wrong handle, producing the
+        # "Invalid handle. Cannot load symbol cublasLtGetVersion" abort.
         torch.cuda.set_device(local_rank)
+        # Ensure the CUDA context is fully initialised on this device before
+        # NCCL touches it.
+        torch.cuda.empty_cache()
+        # Provide safe defaults so torchrun and manual launches both work.
+        os.environ.setdefault('MASTER_ADDR', '127.0.0.1')
+        os.environ.setdefault('MASTER_PORT', '29500')
         dist.init_process_group(backend='nccl', init_method='env://')
         return torch.device(f'cuda:{local_rank}'), True, local_rank
     if cfg.device != 'auto':
@@ -696,6 +712,10 @@ def train_one_epoch(
     loss_sum = 0.0
     correct = 0
     total = 0
+    # apply_masks_ and zero_optimizer_state_ operate on raw parameter names
+    # from the unwrapped model; passing the DDP wrapper directly means the
+    # name lookup fails because DDP prefixes names with "module.".
+    base_model = unwrap_model(model)
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
@@ -706,8 +726,8 @@ def train_one_epoch(
         if cfg.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
-        apply_masks_(model, masks)
-        zero_optimizer_state_(optimizer, model, masks)
+        apply_masks_(base_model, masks)
+        zero_optimizer_state_(optimizer, base_model, masks)
 
         loss_sum += float(loss.item()) * y.numel()
         correct += int((logits.argmax(dim=1) == y).sum().item())
@@ -965,6 +985,8 @@ def main() -> None:
 
     if is_main_process():
         flat_keep = build_sensitivity_keep_vector(model, init_scores, cfg)
+        # Ensure the tensor is on the correct device for broadcasting.
+        flat_keep = flat_keep.to(device=device)
     else:
         flat_keep = torch.empty(n_prunable, dtype=torch.bool, device=device)
     if distributed:
@@ -999,6 +1021,18 @@ def main() -> None:
         flat_init_active = None
         init_top_idx = None
 
+    ddp_model = model
+    if distributed:
+        ddp_model = DDP(
+            model,
+            device_ids=[local_rank] if device.type == 'cuda' else None,
+            output_device=local_rank if device.type == 'cuda' else None,
+            broadcast_buffers=False,
+        )
+
+    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scheduler = build_scheduler(optimizer, cfg)
+
     history = {
         "epoch": [],
         "train_loss": [],
@@ -1012,9 +1046,12 @@ def main() -> None:
     sensitivity_snapshots: List[np.ndarray] = []
 
     def checkpoint(epoch: int, optimizer=None) -> None:
+        # evaluate uses all_reduce internally so every rank must call it.
         train_loss, train_acc = evaluate(ddp_model, train_loader, device)
         test_loss, test_acc = evaluate(ddp_model, test_loader, device)
         if is_main_process():
+            # Sensitivity computation happens on the unwrapped model on rank-0
+            # only; sens_loader is None on non-rank-0 processes.
             curr_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
             flat_curr_prunable = flatten_named_tensors(model, curr_scores).detach().cpu()
             flat_curr_active = flat_curr_prunable[flat_mask]
@@ -1038,20 +1075,10 @@ def main() -> None:
                 f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
                 f"rho_init={rho:.3f} init_topk_mass={top_mass:.3f}"
             )
+        # Barrier so all ranks stay in sync after the (potentially slow)
+        # rank-0 sensitivity pass before resuming training.
         if distributed:
             dist.barrier()
-
-    ddp_model = model
-    if distributed:
-        ddp_model = DDP(
-            model,
-            device_ids=[local_rank] if device.type == 'cuda' else None,
-            output_device=local_rank if device.type == 'cuda' else None,
-            broadcast_buffers=False,
-        )
-
-    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = build_scheduler(optimizer, cfg)
 
     if is_main_process():
         print("\nTraining")
