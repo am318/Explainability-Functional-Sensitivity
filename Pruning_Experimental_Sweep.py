@@ -106,7 +106,7 @@ class Config:
     seed: int = _env_int("SEED", 0)
     # dataset_name: str = _env_str("DATASET", "parabola")
     dataset_name: str = _env_str("DATASET", "morse_vector_field")
-    
+
     n_train: int = _env_int("N_TRAIN", 2**12)
     n_test: int = _env_int("N_TEST", 2**10)
     n_sensitivity: int = _env_int("N_SENSITIVITY", 0)

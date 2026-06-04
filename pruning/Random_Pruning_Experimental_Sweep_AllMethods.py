@@ -38,7 +38,7 @@ from utilities import (
 
 from plotting_utilities import *
 from subnetwork import prune_sensitive_subnetwork_mlp
-from pruning_baselines import (
+from pruning.pruning_baselines import (
     build_snip_masks,
     build_grasp_masks,
     build_synflow_masks,
