@@ -1012,19 +1012,19 @@ summary = {
 summary_path = out_dir / "vit_threshold_connectivity_pruning_summary.json"
 save_json(summary_path, summary)
 
-checkpoint_path = out_dir / "vit_threshold_connectivity_pruned_final.pt"
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "initial_state_dict": initial_state,
-        "masks": {k: v.detach().cpu() for k, v in masks.items()},
-        "sensitivity_scores_init": sensitivity_scores,
-        "sensitivity_scores_final": S_final_dict,
-        "config": asdict(cfg),
-        "summary": summary,
-    },
-    checkpoint_path,
-)
+# checkpoint_path = out_dir / "vit_threshold_connectivity_pruned_final.pt"
+# torch.save(
+#     {
+#         "model_state_dict": model.state_dict(),
+#         "initial_state_dict": initial_state,
+#         "masks": {k: v.detach().cpu() for k, v in masks.items()},
+#         "sensitivity_scores_init": sensitivity_scores,
+#         "sensitivity_scores_final": S_final_dict,
+#         "config": asdict(cfg),
+#         "summary": summary,
+#     },
+#     checkpoint_path,
+# )
 
 if plt is not None and history:
     plt.rcParams.update({
@@ -1165,4 +1165,4 @@ print("\nFinal summary")
 print("=============")
 print(json.dumps({k: v for k, v in summary.items() if k != "history"}, indent=2))
 print(f"Wrote summary to {summary_path}")
-print(f"Wrote checkpoint to {checkpoint_path}")
+# print(f"Wrote checkpoint to {checkpoint_path}")
