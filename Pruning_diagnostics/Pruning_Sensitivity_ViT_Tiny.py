@@ -84,9 +84,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 
 try:
     import torchvision
@@ -119,6 +121,7 @@ def _env_str(name: str, default: str) -> str:
 class Config:
     seed: int = _env_int("SEED", 0)
     device: str = _env_str("DEVICE", "auto")
+    distributed: bool = _env_int("DISTRIBUTED", 0) != 0
 
     dataset: str = _env_str("DATASET", "cifar10")
     data_dir: str = _env_str("DATA_DIR", "./data")
@@ -294,7 +297,12 @@ class ViTTinyCIFAR(nn.Module):
 # ============================================================
 
 
-def make_dataloaders(cfg: Config) -> Tuple[DataLoader, DataLoader, DataLoader]:
+def make_dataloaders(
+    cfg: Config,
+    distributed: bool,
+    rank: int,
+    world_size: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader | None]:
     train_tf = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -306,9 +314,14 @@ def make_dataloaders(cfg: Config) -> Tuple[DataLoader, DataLoader, DataLoader]:
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
     ])
 
-    train_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=train_tf, download=True)
-    test_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=False, transform=eval_tf, download=True)
-    sens_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=eval_tf, download=True)
+    if distributed and rank != 0:
+        dist.barrier()
+    download = (not distributed) or rank == 0
+    train_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=train_tf, download=download)
+    test_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=False, transform=eval_tf, download=download)
+    sens_ds = torchvision.datasets.CIFAR10(cfg.data_dir, train=True, transform=eval_tf, download=download)
+    if distributed and rank == 0:
+        dist.barrier()
 
     rng = np.random.default_rng(cfg.seed)
     if cfg.n_train_subset > 0:
@@ -318,26 +331,92 @@ def make_dataloaders(cfg: Config) -> Tuple[DataLoader, DataLoader, DataLoader]:
         idx = rng.permutation(len(test_ds))[: cfg.n_test_subset]
         test_ds = Subset(test_ds, idx.tolist())
 
-    # Sensitivity estimation uses deterministic transforms and a fixed subset.
-    n_sens = min(len(sens_ds), cfg.n_sens_batches * cfg.sensitivity_batch_size)
-    sens_idx = rng.permutation(len(sens_ds))[:n_sens]
-    sens_ds = Subset(sens_ds, sens_idx.tolist())
+    train_sampler = None
+    test_sampler = None
+    if distributed:
+        train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True, drop_last=False)
+        test_sampler = DistributedSampler(test_ds, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+
+    sens_loader = None
+    if rank == 0:
+        n_sens = min(len(sens_ds), cfg.n_sens_batches * cfg.sensitivity_batch_size)
+        sens_idx = rng.permutation(len(sens_ds))[:n_sens]
+        sens_ds = Subset(sens_ds, sens_idx.tolist())
+        sens_loader = DataLoader(
+            sens_ds, batch_size=cfg.sensitivity_batch_size, shuffle=False,
+            num_workers=cfg.num_workers, pin_memory=True,
+        )
 
     train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,
+        train_ds, batch_size=cfg.batch_size, shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=cfg.num_workers, pin_memory=True,
     )
     test_loader = DataLoader(
         test_ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=True,
-    )
-    sens_loader = DataLoader(
-        sens_ds, batch_size=cfg.sensitivity_batch_size, shuffle=False,
+        sampler=test_sampler,
         num_workers=cfg.num_workers, pin_memory=True,
     )
     return train_loader, test_loader, sens_loader
 
 
+# ============================================================
+# Distributed/runtime helpers
+# ============================================================
+
+
+def dist_is_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_rank() -> int:
+    return dist.get_rank() if dist_is_initialized() else 0
+
+
+def get_world_size() -> int:
+    return dist.get_world_size() if dist_is_initialized() else 1
+
+
+def is_main_process() -> bool:
+    return get_rank() == 0
+
+
+def unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if hasattr(model, 'module') else model
+
+
+def setup_runtime(cfg: Config) -> Tuple[torch.device, bool, int]:
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    if cfg.device == 'cpu':
+        return torch.device('cpu'), False, 0
+    distributed = world_size > 1 or cfg.distributed
+    if distributed:
+        if not dist.is_available():
+            raise RuntimeError('torch.distributed is not available in this PyTorch build.')
+        local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+        if not torch.cuda.is_available():
+            raise RuntimeError('Distributed mode is configured, but CUDA is not available.')
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl', init_method='env://')
+        return torch.device(f'cuda:{local_rank}'), True, local_rank
+    if cfg.device != 'auto':
+        return torch.device(cfg.device), False, 0
+    if torch.cuda.is_available():
+        return torch.device('cuda'), False, 0
+    if torch.backends.mps.is_available():
+        return torch.device('mps'), False, 0
+    return torch.device('cpu'), False, 0
+
+
+def broadcast_bool_tensor(tensor: torch.Tensor, src: int = 0) -> torch.Tensor:
+    if dist_is_initialized():
+        dist.broadcast(tensor, src)
+    return tensor
+
+
+# ============================================================
+# Pruning utilities
+# ============================================================
 # ============================================================
 # Pruning utilities
 # ============================================================
@@ -367,16 +446,18 @@ def is_prunable_parameter(name: str, p: nn.Parameter, cfg: Config) -> bool:
 
 
 def make_dense_masks(model: nn.Module, cfg: Config) -> Dict[str, torch.Tensor]:
+    base = unwrap_model(model)
     masks = {}
-    for name, p in model.named_parameters():
+    for name, p in base.named_parameters():
         if is_prunable_parameter(name, p, cfg):
             masks[name] = torch.ones_like(p, dtype=torch.bool)
     return masks
 
 
 def flatten_named_tensors(model: nn.Module, tensors: Dict[str, torch.Tensor]) -> torch.Tensor:
+    base = unwrap_model(model)
     parts = []
-    for name, _p in model.named_parameters():
+    for name, _p in base.named_parameters():
         if name in tensors:
             parts.append(tensors[name].reshape(-1))
     if not parts:
@@ -403,14 +484,16 @@ def unflatten_to_named_masks(
 
 
 def apply_masks_(model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
+    base = unwrap_model(model)
     with torch.no_grad():
-        for name, p in model.named_parameters():
+        for name, p in base.named_parameters():
             if name in masks:
                 p.mul_(masks[name].to(device=p.device, dtype=p.dtype))
 
 
 def zero_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
-    for name, p in model.named_parameters():
+    base = unwrap_model(model)
+    for name, p in base.named_parameters():
         if name not in masks:
             continue
         state = optimizer.state.get(p)
@@ -469,11 +552,11 @@ def compute_output_jacobian_sensitivity(
     return scores
 
 
-def build_sensitivity_prune_masks(
+def build_sensitivity_keep_vector(
     model: nn.Module,
     scores: Dict[str, torch.Tensor],
     cfg: Config,
-) -> Dict[str, torch.Tensor]:
+) -> torch.Tensor:
     flat_scores = flatten_named_tensors(model, scores)
     n_total = flat_scores.numel()
     n_keep = max(1, int(round((1.0 - cfg.sparsity) * n_total)))
@@ -483,6 +566,15 @@ def build_sensitivity_prune_masks(
     keep_idx = torch.topk(flat_scores, k=n_keep, largest=True, sorted=False).indices
     flat_keep = torch.zeros(n_total, dtype=torch.bool, device=flat_scores.device)
     flat_keep[keep_idx] = True
+    return flat_keep
+
+
+def build_sensitivity_prune_masks(
+    model: nn.Module,
+    scores: Dict[str, torch.Tensor],
+    cfg: Config,
+) -> Dict[str, torch.Tensor]:
+    flat_keep = build_sensitivity_keep_vector(model, scores, cfg)
     return unflatten_to_named_masks(model, cfg, flat_keep)
 
 
@@ -557,6 +649,12 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Tupl
         loss_sum += float(loss.item())
         correct += int((logits.argmax(dim=1) == y).sum().item())
         total += int(y.numel())
+    if dist_is_initialized():
+        stats = torch.tensor([loss_sum, float(correct), float(total)], dtype=torch.float64, device=device)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        loss_sum = float(stats[0].item())
+        correct = int(stats[1].item())
+        total = int(stats[2].item())
     return loss_sum / max(1, total), correct / max(1, total)
 
 
@@ -810,27 +908,29 @@ def set_reproducibility(seed: int) -> None:
 
 
 def choose_device(cfg: Config) -> torch.device:
-    if cfg.device != "auto":
-        return torch.device(cfg.device)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+    device, _, _ = setup_runtime(cfg)
+    return device
 
 
 def main() -> None:
     cfg = Config()
     set_reproducibility(cfg.seed)
-    device = choose_device(cfg)
+    device, distributed, local_rank = setup_runtime(cfg)
+    rank = get_rank()
+    world_size = get_world_size()
     output_dir = Path(cfg.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if is_main_process():
+        output_dir.mkdir(parents=True, exist_ok=True)
+    if distributed:
+        dist.barrier()
 
-    print(f"Using device: {device}")
-    print(f"Output directory: {output_dir}")
-    print(json.dumps(asdict(cfg), indent=2))
+    if is_main_process():
+        print(f"Using device: {device}")
+        print(f"Distributed: {distributed} | world_size={world_size} | rank={rank}")
+        print(f"Output directory: {output_dir}")
+        print(json.dumps(asdict(cfg), indent=2))
 
-    train_loader, test_loader, sens_loader = make_dataloaders(cfg)
+    train_loader, test_loader, sens_loader = make_dataloaders(cfg, distributed, rank, world_size)
 
     model = ViTTinyCIFAR(
         image_size=cfg.image_size,
@@ -848,13 +948,28 @@ def main() -> None:
         p.numel() for name, p in model.named_parameters()
         if is_prunable_parameter(name, p, cfg)
     )
-    print(f"Model parameters: {n_params:,}")
-    print(f"Prunable parameters: {n_prunable:,}")
+    if is_main_process():
+        print(f"Model parameters: {n_params:,}")
+        print(f"Prunable parameters: {n_prunable:,}")
 
-    print("\nComputing initialization sensitivity")
-    print("====================================")
-    init_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
-    masks = build_sensitivity_prune_masks(model, init_scores, cfg)
+    if is_main_process():
+        print("\nComputing initialization sensitivity")
+        print("====================================")
+        init_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
+        flat_init_prunable = flatten_named_tensors(model, init_scores).detach().cpu()
+        flat_mask = None
+    else:
+        init_scores = None
+        flat_init_prunable = None
+        flat_mask = None
+
+    if is_main_process():
+        flat_keep = build_sensitivity_keep_vector(model, init_scores, cfg)
+    else:
+        flat_keep = torch.empty(n_prunable, dtype=torch.bool, device=device)
+    if distributed:
+        broadcast_bool_tensor(flat_keep, src=0)
+    masks = unflatten_to_named_masks(model, cfg, flat_keep)
     apply_masks_(model, masks)
 
     layer_rows = layer_mask_statistics(model, masks)
@@ -863,23 +978,26 @@ def main() -> None:
     pruned = sum(r["pruned"] for r in layer_rows)
     realised_sparsity = pruned / max(1, pruned + retained)
 
-    print(f"Requested sparsity: {cfg.sparsity:.4f}")
-    print(f"Realised prunable sparsity: {realised_sparsity:.4f}")
-    print(f"Retained prunable parameters: {retained:,} / {retained + pruned:,}")
-    print("Component sparsity:")
-    for row in group_rows:
-        print(f"  {row['group']:16s} sparsity={row['sparsity']:.4f} retained={row['retained']:,}/{row['total']:,}")
+    if is_main_process():
+        print(f"Requested sparsity: {cfg.sparsity:.4f}")
+        print(f"Realised prunable sparsity: {realised_sparsity:.4f}")
+        print(f"Retained prunable parameters: {retained:,} / {retained + pruned:,}")
+        print("Component sparsity:")
+        for row in group_rows:
+            print(f"  {row['group']:16s} sparsity={row['sparsity']:.4f} retained={row['retained']:,}/{row['total']:,}")
 
-    with open(output_dir / "layerwise_sparsity.json", "w") as f:
-        json.dump(layer_rows, f, indent=2)
-    with open(output_dir / "component_sparsity.json", "w") as f:
-        json.dump(group_rows, f, indent=2)
+        with open(output_dir / "layerwise_sparsity.json", "w") as f:
+            json.dump(layer_rows, f, indent=2)
+        with open(output_dir / "component_sparsity.json", "w") as f:
+            json.dump(group_rows, f, indent=2)
 
-    flat_init_prunable = flatten_named_tensors(model, init_scores).detach().cpu()
-    flat_mask = flatten_named_tensors(model, masks).detach().bool().cpu()
-    flat_init_active = flat_init_prunable[flat_mask]
-    k = max(1, int(round(cfg.topk_frac * flat_init_active.numel())))
-    init_top_idx = torch.topk(flat_init_active, k=k, largest=True).indices
+        flat_mask = flatten_named_tensors(model, masks).detach().bool().cpu()
+        flat_init_active = flat_init_prunable[flat_mask]
+        k = max(1, int(round(cfg.topk_frac * flat_init_active.numel())))
+        init_top_idx = torch.topk(flat_init_active, k=k, largest=True).indices
+    else:
+        flat_init_active = None
+        init_top_idx = None
 
     history = {
         "epoch": [],
@@ -894,94 +1012,118 @@ def main() -> None:
     sensitivity_snapshots: List[np.ndarray] = []
 
     def checkpoint(epoch: int, optimizer=None) -> None:
-        train_loss, train_acc = evaluate(model, train_loader, device)
-        test_loss, test_acc = evaluate(model, test_loader, device)
-        curr_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
-        flat_curr_prunable = flatten_named_tensors(model, curr_scores).detach().cpu()
-        flat_curr_active = flat_curr_prunable[flat_mask]
-        rho = spearman_corr(flat_init_active, flat_curr_active)
-        top_mass = mass_on_topk(flat_curr_active, init_top_idx)
-        lr = optimizer.param_groups[0]["lr"] if optimizer is not None else cfg.lr
+        train_loss, train_acc = evaluate(ddp_model, train_loader, device)
+        test_loss, test_acc = evaluate(ddp_model, test_loader, device)
+        if is_main_process():
+            curr_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
+            flat_curr_prunable = flatten_named_tensors(model, curr_scores).detach().cpu()
+            flat_curr_active = flat_curr_prunable[flat_mask]
+            rho = spearman_corr(flat_init_active, flat_curr_active)
+            top_mass = mass_on_topk(flat_curr_active, init_top_idx)
+            lr = optimizer.param_groups[0]["lr"] if optimizer is not None else cfg.lr
 
-        history["epoch"].append(epoch)
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["test_loss"].append(test_loss)
-        history["test_acc"].append(test_acc)
-        history["lr"].append(lr)
-        history["spearman_init_current"].append(rho)
-        history["init_topk_mass"].append(top_mass)
-        sensitivity_snapshots.append(flat_curr_active.numpy())
+            history["epoch"].append(epoch)
+            history["train_loss"].append(train_loss)
+            history["train_acc"].append(train_acc)
+            history["test_loss"].append(test_loss)
+            history["test_acc"].append(test_acc)
+            history["lr"].append(lr)
+            history["spearman_init_current"].append(rho)
+            history["init_topk_mass"].append(top_mass)
+            sensitivity_snapshots.append(flat_curr_active.numpy())
 
-        print(
-            f"epoch={epoch:4d} | lr={lr:.2e} | "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-            f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
-            f"rho_init={rho:.3f} init_topk_mass={top_mass:.3f}"
+            print(
+                f"epoch={epoch:4d} | lr={lr:.2e} | "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
+                f"rho_init={rho:.3f} init_topk_mass={top_mass:.3f}"
+            )
+        if distributed:
+            dist.barrier()
+
+    ddp_model = model
+    if distributed:
+        ddp_model = DDP(
+            model,
+            device_ids=[local_rank] if device.type == 'cuda' else None,
+            output_device=local_rank if device.type == 'cuda' else None,
+            broadcast_buffers=False,
         )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = build_scheduler(optimizer, cfg)
 
-    print("\nTraining")
-    print("========")
+    if is_main_process():
+        print("\nTraining")
+        print("========")
     checkpoint(0, optimizer)
     if cfg.run_training:
         for epoch in range(1, cfg.epochs + 1):
-            train_one_epoch(model, train_loader, optimizer, scheduler, masks, cfg, device)
+            sampler = getattr(train_loader, 'sampler', None)
+            if distributed and hasattr(sampler, 'set_epoch'):
+                sampler.set_epoch(epoch)
+            train_one_epoch(ddp_model, train_loader, optimizer, scheduler, masks, cfg, device)
             if epoch % cfg.checkpoint_interval == 0 or epoch == cfg.epochs:
                 checkpoint(epoch, optimizer)
 
-    print("\nFinal sensitivity diagnostics")
-    print("=============================")
-    final_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
-    flat_final_prunable = flatten_named_tensors(model, final_scores).detach().cpu()
-    flat_final_active = flat_final_prunable[flat_mask]
+    final_train_loss, final_train_acc = evaluate(ddp_model, train_loader, device)
+    final_test_loss, final_test_acc = evaluate(ddp_model, test_loader, device)
 
-    final_erank = plot_curvature_proxy(flat_final_active, output_dir) if cfg.compute_final_curvature_proxy else None
+    if distributed:
+        dist.barrier()
 
-    plot_history(history, output_dir)
-    plot_sensitivity_distribution(flat_init_active, flat_final_active, output_dir)
-    plot_layer_sparsity(layer_rows, output_dir)
-    plot_group_sparsity(group_rows, output_dir)
-    if sensitivity_snapshots:
-        plot_sensitivity_heatmap(np.stack(sensitivity_snapshots, axis=0), history["epoch"], output_dir)
+    if is_main_process():
+        print("\nFinal sensitivity diagnostics")
+        print("=============================")
+        final_scores = compute_output_jacobian_sensitivity(model, sens_loader, cfg, device)
+        flat_final_prunable = flatten_named_tensors(model, final_scores).detach().cpu()
+        flat_final_active = flat_final_prunable[flat_mask]
 
-    final_train_loss, final_train_acc = evaluate(model, train_loader, device)
-    final_test_loss, final_test_acc = evaluate(model, test_loader, device)
+        final_erank = plot_curvature_proxy(flat_final_active, output_dir) if cfg.compute_final_curvature_proxy else None
 
-    summary = {
-        "architecture": "ViT-Tiny-CIFAR10",
-        "purpose": "minimal transformer sensitivity-pruning diagnostic",
-        "config": asdict(cfg),
-        "parameter_count": n_params,
-        "prunable_parameter_count": n_prunable,
-        "retained_prunable_parameter_count": retained,
-        "pruned_prunable_parameter_count": pruned,
-        "requested_sparsity": cfg.sparsity,
-        "realised_prunable_sparsity": realised_sparsity,
-        "final_train_loss": final_train_loss,
-        "final_train_accuracy": final_train_acc,
-        "final_test_loss": final_test_loss,
-        "final_test_accuracy": final_test_acc,
-        "final_spearman_init_final": spearman_corr(flat_init_active, flat_final_active),
-        "final_mass_in_initial_topk": mass_on_topk(flat_final_active, init_top_idx),
-        "final_diagonal_sensitivity_effective_rank": final_erank,
-        "history": history,
-    }
+        plot_history(history, output_dir)
+        plot_sensitivity_distribution(flat_init_active, flat_final_active, output_dir)
+        plot_layer_sparsity(layer_rows, output_dir)
+        plot_group_sparsity(group_rows, output_dir)
+        if sensitivity_snapshots:
+            plot_sensitivity_heatmap(np.stack(sensitivity_snapshots, axis=0), history["epoch"], output_dir)
 
-    with open(output_dir / "final_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
-    torch.save({
-        "initial_state": initial_state,
-        "final_state": model.state_dict(),
-        "masks": {k: v.detach().cpu() for k, v in masks.items()},
-        "config": asdict(cfg),
-        "summary": summary,
-    }, output_dir / "checkpoint_with_masks.pt")
+        summary = {
+            "architecture": "ViT-Tiny-CIFAR10",
+            "purpose": "minimal transformer sensitivity-pruning diagnostic",
+            "config": asdict(cfg),
+            "parameter_count": n_params,
+            "prunable_parameter_count": n_prunable,
+            "retained_prunable_parameter_count": retained,
+            "pruned_prunable_parameter_count": pruned,
+            "requested_sparsity": cfg.sparsity,
+            "realised_prunable_sparsity": realised_sparsity,
+            "final_train_loss": final_train_loss,
+            "final_train_accuracy": final_train_acc,
+            "final_test_loss": final_test_loss,
+            "final_test_accuracy": final_test_acc,
+            "final_spearman_init_final": spearman_corr(flat_init_active, flat_final_active),
+            "final_mass_in_initial_topk": mass_on_topk(flat_final_active, init_top_idx),
+            "final_diagonal_sensitivity_effective_rank": final_erank,
+            "history": history,
+        }
 
-    print(json.dumps(summary, indent=2))
-    print(f"Wrote outputs to {output_dir}")
+        with open(output_dir / "final_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        torch.save({
+            "initial_state": initial_state,
+            "final_state": unwrap_model(ddp_model).state_dict(),
+            "masks": {k: v.detach().cpu() for k, v in masks.items()},
+            "config": asdict(cfg),
+            "summary": summary,
+        }, output_dir / "checkpoint_with_masks.pt")
+
+        print(json.dumps(summary, indent=2))
+        print(f"Wrote outputs to {output_dir}")
+
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
