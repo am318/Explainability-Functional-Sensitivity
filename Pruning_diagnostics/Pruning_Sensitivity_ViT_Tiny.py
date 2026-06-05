@@ -1364,10 +1364,6 @@ embed_sel = reach_embed_sel
 hidden_sel = reach_hidden_sel
 pruning_stats["reachability_cleanup"] = cleanup_stats
 
-S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
-init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
-initial_param_mag_active = _flatten_param_magnitudes(model, masks)
-
 print(f"Pruning complete via strategy={cfg.pruning_strategy.lower()}")
 print(json.dumps(pruning_stats, indent=2))
 
@@ -1380,6 +1376,17 @@ print(
     f"Compact model built: trainable parameters {trainable_parameter_count(model):,} "
     f"(from {precompact_trainable_parameter_count:,} after masking)"
 )
+
+# Recompute the initial sensitivity reference in the compact model's parameter
+# basis so all Spearman and top-k comparisons use the same coordinate space.
+S_init_compact_dict, _ = compute_sensitivity_scores(
+    model, sens_loader, cfg, device, probes=cfg.sensitivity_probes,
+    masks=masks,
+)
+S_init_active = _flatten_like_model(model, S_init_compact_dict)
+init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
+initial_param_mag_active = _flatten_param_magnitudes(model)
+
 print("Training the compact pruned ViT from scratch")
 
 
