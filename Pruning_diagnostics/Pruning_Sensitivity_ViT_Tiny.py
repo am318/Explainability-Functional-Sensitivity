@@ -99,8 +99,8 @@ class Config:
     prune_embeddings: bool = _env_bool("PRUNE_EMBEDDINGS", True)
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
-    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.90)
-    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 40)
+    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.95)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 10)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
@@ -132,7 +132,7 @@ class Config:
     # Connectivity-preserving threshold pruning. For dense weights this restores
     # at least this many incident coordinates for empty input/output units.
     connectivity_closure: bool = _env_bool("CONNECTIVITY_CLOSURE", True)
-    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 2)
+    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 1)
 
     def __post_init__(self) -> None:
         if self.dataset.upper() not in {"CIFAR10", "CIFAR100"}:
