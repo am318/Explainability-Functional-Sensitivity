@@ -78,48 +78,48 @@ class Config:
     output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_sensitivity_pruning")
     download: bool = _env_bool("DOWNLOAD", True)
 
-    image_size: int = _env_int("IMAGE_SIZE", 64)
+    image_size: int = _env_int("IMAGE_SIZE", 32)
     num_classes: int = _env_int("NUM_CLASSES", 10)
     train_subset: int = _env_int("TRAIN_SUBSET", 0)       # 0 means full train set
     test_subset: int = _env_int("TEST_SUBSET", 0)         # 0 means full test set
-    sensitivity_samples: int = _env_int("SENSITIVITY_SAMPLES", 8192)
+    sensitivity_samples: int = _env_int("SENSITIVITY_SAMPLES", 16384)
     sensitivity_batch_size: int = _env_int("SENSITIVITY_BATCH_SIZE", 512)
-    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 8)
+    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 16)
 
     patch_size: int = _env_int("PATCH_SIZE", 4)
     embed_dim: int = _env_int("EMBED_DIM", 192)
     depth: int = _env_int("DEPTH", 12)
     num_heads: int = _env_int("NUM_HEADS", 3)
     mlp_ratio: float = _env_float("MLP_RATIO", 4.0)
-    dropout: float = _env_float("DROPOUT", 0.0)
+    dropout: float = _env_float("DROPOUT", 0.05)
 
-    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-6)
+    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-4)
     prune_bias: bool = _env_bool("PRUNE_BIAS", True)
     prune_norm: bool = _env_bool("PRUNE_NORM", True)
     prune_embeddings: bool = _env_bool("PRUNE_EMBEDDINGS", True)
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
-    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.25)
-    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 3)
+    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.90)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 40)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
-    preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", True)
+    preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
 
     batch_size: int = _env_int("BATCH_SIZE", 256)
-    epochs: int = _env_int("EPOCHS", 300)
-    lr: float = _env_float("LR", 1e-3)
-    weight_decay: float = _env_float("WEIGHT_DECAY", 0.05)
-    warmup_epochs: int = _env_int("WARMUP_EPOCHS", 10)
+    epochs: int = _env_int("EPOCHS", 400)
+    lr: float = _env_float("LR", 1e-2)
+    weight_decay: float = _env_float("WEIGHT_DECAY", 0.08)
+    warmup_epochs: int = _env_int("WARMUP_EPOCHS", 20)
     min_lr: float = _env_float("MIN_LR", 1e-8)
     num_workers: int = _env_int("NUM_WORKERS", 4)
     grad_clip: float = _env_float("GRAD_CLIP", 1.0)
     label_smoothing: float = _env_float("LABEL_SMOOTHING", 0.1)
     amp: bool = _env_bool("AMP", True)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 5)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
 
     # Sweep-style sensitivity diagnostics. These are bounded by default so the
     # script remains viable on ViT-scale parameter counts.
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
-    reference_epoch: int = _env_int("REFERENCE_EPOCH", 0)  # 0 means first checkpoint after epoch 1
+    reference_epoch: int = _env_int("REFERENCE_EPOCH", warmup_epochs)  # 0 means first checkpoint after epoch 1
     analysis_probes: int = _env_int("ANALYSIS_PROBES", 4)
     analysis_probe_matrix_rows: int = _env_int("ANALYSIS_PROBE_MATRIX_ROWS", 128)
     max_probe_matrix_elements: int = _env_int("MAX_PROBE_MATRIX_ELEMENTS", 50_000_000)
@@ -131,7 +131,7 @@ class Config:
     # Connectivity-preserving threshold pruning. For dense weights this restores
     # at least this many incident coordinates for empty input/output units.
     connectivity_closure: bool = _env_bool("CONNECTIVITY_CLOSURE", True)
-    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 3)
+    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 2)
 
     def __post_init__(self) -> None:
         if self.dataset.upper() not in {"CIFAR10", "CIFAR100"}:
