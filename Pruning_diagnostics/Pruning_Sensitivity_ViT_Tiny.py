@@ -91,7 +91,7 @@ class Config:
     depth: int = _env_int("DEPTH", 12)
     num_heads: int = _env_int("NUM_HEADS", 3)
     mlp_ratio: float = _env_float("MLP_RATIO", 4.0)
-    dropout: float = _env_float("DROPOUT", 0.08)
+    dropout: float = _env_float("DROPOUT", 0.05)
 
     prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-4)
     prune_bias: bool = _env_bool("PRUNE_BIAS", True)
@@ -436,14 +436,13 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float, dropout: float, mlp_hidden_dim: Optional[int] = None):
+    def __init__(self, dim: int, num_heads: int, mlp_ratio: float, dropout: float):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
         self.drop_path = nn.Identity()
         self.norm2 = nn.LayerNorm(dim)
-        hidden_dim = int(dim * mlp_ratio) if mlp_hidden_dim is None else int(mlp_hidden_dim)
-        self.mlp = MLP(dim, hidden_dim, dropout)
+        self.mlp = MLP(dim, int(dim * mlp_ratio), dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.norm1(x)
@@ -464,7 +463,6 @@ class VisionTransformer(nn.Module):
         num_heads: int,
         mlp_ratio: float,
         dropout: float,
-        mlp_hidden_dims: Optional[List[int]] = None,
     ):
         super().__init__()
         self.patch_embed = PatchEmbed(image_size, patch_size, 3, embed_dim)
@@ -472,17 +470,9 @@ class VisionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, n_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(dropout)
-        if mlp_hidden_dims is None:
-            self.blocks = nn.ModuleList([
-                Block(embed_dim, num_heads, mlp_ratio, dropout) for _ in range(depth)
-            ])
-        else:
-            if len(mlp_hidden_dims) != depth:
-                raise ValueError("mlp_hidden_dims must match depth")
-            self.blocks = nn.ModuleList([
-                Block(embed_dim, num_heads, mlp_ratio, dropout, mlp_hidden_dim=mlp_hidden_dims[i])
-                for i in range(depth)
-            ])
+        self.blocks = nn.ModuleList([
+            Block(embed_dim, num_heads, mlp_ratio, dropout) for _ in range(depth)
+        ])
         self.norm = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, num_classes)
         self.apply(self._init_weights)
@@ -789,167 +779,6 @@ def apply_masks_(model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
 
 
 
-
-
-def _ensure_at_least_one_true(mask: torch.Tensor, score: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Guarantee a non-empty boolean selection when the downstream code needs one."""
-    if mask.numel() == 0 or int(mask.sum().item()) > 0:
-        return mask
-    out = mask.clone()
-    if score is not None and score.numel() == mask.numel():
-        idx = int(torch.argmax(score.reshape(-1)).item())
-    else:
-        idx = 0
-    out.reshape(-1)[idx] = True
-    return out
-
-
-def build_reachability_cleanup_masks(
-    model: nn.Module,
-    masks: Dict[str, torch.Tensor],
-    cfg: Config,
-    scores: Optional[Dict[str, torch.Tensor]] = None,
-    seed_embed_sel: Optional[torch.Tensor] = None,
-    seed_hidden_sel: Optional[Dict[int, torch.Tensor]] = None,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor]]:
-    """Zero parameters that are not on any surviving path to the classifier head.
-
-    The cleanup is conservative: it keeps only coordinates that belong to units
-    reachable from the output-side embedding channels, then ANDs that structural
-    reachability mask with the current pruning mask so the pass only removes
-    additional disconnected coordinates.
-
-    The structured pruning stage may already have selected a compact embedding
-    subset. Treat that subset as the seed so the cleanup can only shrink it when
-    needed for connectivity, rather than accidentally expanding the model back
-    to full width when the classifier head itself is dense.
-    """
-    head_mask = masks.get("head.weight")
-    if head_mask is None:
-        raise RuntimeError("Expected head.weight to be present in masks.")
-
-    head_scores = scores["head.weight"].abs().mean(dim=0) if scores is not None and "head.weight" in scores else None
-    head_cols = head_mask.detach().cpu().bool().any(dim=0)
-
-    if seed_embed_sel is not None and seed_embed_sel.numel() == head_cols.numel():
-        embed_sel = seed_embed_sel.detach().cpu().bool().clone()
-    else:
-        embed_sel = head_cols.clone()
-
-    # If the head is sparse, intersect with the surviving classifier columns.
-    # If the head is dense, this leaves the structured seed untouched.
-    embed_sel = embed_sel & head_cols
-    embed_sel = _ensure_at_least_one_true(embed_sel, head_scores).to(torch.bool)
-
-    hidden_sel: Dict[int, torch.Tensor] = {}
-    hidden_total = int(cfg.embed_dim * cfg.mlp_ratio)
-    reachable_hidden_total = 0
-
-    for block_idx in range(cfg.depth):
-        fc1_name = f"blocks.{block_idx}.mlp.fc1.weight"
-        fc2_name = f"blocks.{block_idx}.mlp.fc2.weight"
-        fc1_mask = masks.get(fc1_name)
-        fc2_mask = masks.get(fc2_name)
-        if fc1_mask is None or fc2_mask is None:
-            hmask = torch.ones(hidden_total, dtype=torch.bool)
-            if seed_hidden_sel is not None and block_idx in seed_hidden_sel:
-                seed_hmask = seed_hidden_sel[block_idx].detach().cpu().bool()
-                if seed_hmask.numel() == hidden_total:
-                    hmask = seed_hmask.clone()
-            hidden_sel[block_idx] = hmask
-            reachable_hidden_total += int(hmask.sum().item())
-            continue
-
-        reachable = fc1_mask.detach().cpu().bool()[:, embed_sel].any(dim=1) & fc2_mask.detach().cpu().bool()[embed_sel, :].any(dim=0)
-        if seed_hidden_sel is not None and block_idx in seed_hidden_sel:
-            seed_hmask = seed_hidden_sel[block_idx].detach().cpu().bool()
-            if seed_hmask.numel() == reachable.numel():
-                reachable = reachable & seed_hmask
-        fb = None
-        if scores is not None:
-            if fc1_name in scores:
-                fb = scores[fc1_name].abs().mean(dim=1)
-            elif fc2_name in scores:
-                fb = scores[fc2_name].abs().mean(dim=0)
-        reachable = _ensure_at_least_one_true(reachable, fb)
-        hidden_sel[block_idx] = reachable.to(torch.bool)
-        reachable_hidden_total += int(reachable.sum().item())
-
-    cleanup_masks: Dict[str, torch.Tensor] = {}
-    eligible_total = 0
-    retained_total = 0
-    zeroed_total = 0
-
-    for name, p in model.named_parameters():
-        current = masks.get(name)
-        if current is None:
-            current = torch.ones_like(p, dtype=torch.bool)
-        else:
-            current = current.detach().clone().to(dtype=torch.bool)
-
-        if not is_prunable_parameter(name, p, cfg):
-            structural = torch.ones_like(p, dtype=torch.bool)
-        elif name in {"cls_token", "pos_embed"}:
-            structural = embed_sel.view(1, 1, -1).expand_as(p).clone()
-        elif "patch_embed.proj.weight" in name and p.ndim == 4:
-            structural = embed_sel.view(-1, 1, 1, 1).expand_as(p).clone()
-        elif "patch_embed.proj.bias" in name and p.ndim == 1:
-            structural = embed_sel.clone()
-        elif "attn.in_proj_weight" in name and p.ndim == 2:
-            row_sel = embed_sel.repeat(3)
-            if row_sel.numel() != p.shape[0]:
-                row_sel = row_sel[:p.shape[0]] if row_sel.numel() > p.shape[0] else torch.cat([row_sel, torch.zeros(p.shape[0] - row_sel.numel(), dtype=torch.bool)], dim=0)
-            col_sel = embed_sel
-            structural = row_sel.view(-1, 1).expand_as(p).clone() & col_sel.view(1, -1).expand_as(p).clone()
-        elif "attn.in_proj_bias" in name and p.ndim == 1:
-            structural = embed_sel.repeat(3).clone()
-        elif "attn.out_proj.weight" in name and p.ndim == 2:
-            structural = embed_sel.view(-1, 1).expand_as(p).clone() & embed_sel.view(1, -1).expand_as(p).clone()
-        elif "attn.out_proj.bias" in name and p.ndim == 1:
-            structural = embed_sel.clone()
-        elif "mlp.fc2.weight" in name and p.ndim == 2:
-            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc2", name)
-            block_idx = int(block_match.group(1)) if block_match else -1
-            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[1], dtype=torch.bool))
-            structural = embed_sel.view(-1, 1).expand(p.shape[0], p.shape[1]).clone() & hmask.view(1, -1).expand(p.shape[0], p.shape[1]).clone()
-        elif "mlp.fc2.bias" in name and p.ndim == 1:
-            structural = embed_sel.clone()
-        elif "mlp.fc1.weight" in name and p.ndim == 2:
-            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
-            block_idx = int(block_match.group(1)) if block_match else -1
-            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[0], dtype=torch.bool))
-            structural = hmask.view(-1, 1).expand_as(p).clone() & embed_sel.view(1, -1).expand_as(p).clone()
-        elif "mlp.fc1.bias" in name and p.ndim == 1:
-            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
-            block_idx = int(block_match.group(1)) if block_match else -1
-            structural = hidden_sel.get(block_idx, torch.ones_like(p, dtype=torch.bool)).clone()
-        elif "norm" in name.lower() and p.ndim == 1:
-            structural = embed_sel.clone()
-        elif "head.weight" in name and p.ndim == 2:
-            structural = embed_sel.view(1, -1).expand_as(p).clone()
-        elif "head.bias" in name and p.ndim == 1:
-            structural = torch.ones_like(p, dtype=torch.bool)
-        else:
-            structural = torch.ones_like(p, dtype=torch.bool)
-
-        cleaned = current & structural
-        if is_prunable_parameter(name, p, cfg):
-            eligible_total += int(current.numel())
-            retained_total += int(cleaned.sum().item())
-            zeroed_total += int(current.sum().item() - cleaned.sum().item())
-        cleanup_masks[name] = cleaned
-
-    stats = {
-        "eligible_parameter_count": float(eligible_total),
-        "retained_eligible_parameter_count": float(retained_total),
-        "pruned_eligible_parameter_count": float(max(0, eligible_total - retained_total)),
-        "actual_prune_fraction_eligible": float(max(0, eligible_total - retained_total) / max(1, eligible_total)),
-        "cleanup_zeroed_coordinate_count": float(zeroed_total),
-        "reachable_embed_channel_count": float(int(embed_sel.sum().item())),
-        "reachable_hidden_unit_count": float(reachable_hidden_total),
-        "hidden_block_count": float(cfg.depth),
-    }
-    return cleanup_masks, stats, embed_sel, hidden_sel
 def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
     for name, p in model.named_parameters():
         state = optimizer.state.get(p)
@@ -959,100 +788,6 @@ def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Mod
         for value in state.values():
             if torch.is_tensor(value) and value.shape == p.shape:
                 value.mul_(mask)
-
-
-def _best_compact_num_heads(embed_dim: int, preferred_heads: int) -> int:
-    preferred_heads = max(1, min(preferred_heads, embed_dim))
-    for heads in range(preferred_heads, 0, -1):
-        if embed_dim % heads == 0:
-            return heads
-    return 1
-
-
-def build_compact_model_from_masks(
-    model: nn.Module,
-    embed_sel: torch.Tensor,
-    hidden_sel: Dict[int, torch.Tensor],
-    cfg: Config,
-    device: torch.device,
-    source_state: Optional[Dict[str, torch.Tensor]] = None,
-) -> Tuple[nn.Module, Dict[str, torch.Tensor]]:
-    """Physically remove masked channels/units so training no longer touches them.
-
-    The compact model is built from the selected coordinates only, and the
-    parameter tensors are sourced from the masked initialization state so the
-    result is exactly the masked version of the initialized network.
-    """
-    src = model.state_dict() if source_state is None else source_state
-    embed_idx = torch.where(embed_sel.detach().cpu().bool())[0].to(torch.long)
-    if embed_idx.numel() == 0:
-        raise RuntimeError("No embedding channels were retained; cannot build a compact model.")
-
-    compact_embed_dim = int(embed_idx.numel())
-    compact_num_heads = _best_compact_num_heads(compact_embed_dim, cfg.num_heads)
-    hidden_dims: List[int] = []
-    hidden_idx_by_block: Dict[int, torch.Tensor] = {}
-    for block_idx in range(cfg.depth):
-        hmask = hidden_sel.get(block_idx)
-        if hmask is None:
-            hmask = torch.ones(int(cfg.embed_dim * cfg.mlp_ratio), dtype=torch.bool)
-        hidx = torch.where(hmask.detach().cpu().bool())[0].to(torch.long)
-        hidden_idx_by_block[block_idx] = hidx
-        hidden_dims.append(int(hidx.numel()))
-
-    compact = VisionTransformer(
-        image_size=cfg.image_size,
-        patch_size=cfg.patch_size,
-        num_classes=cfg.num_classes,
-        embed_dim=compact_embed_dim,
-        depth=cfg.depth,
-        num_heads=compact_num_heads,
-        mlp_ratio=cfg.mlp_ratio,
-        dropout=cfg.dropout,
-        mlp_hidden_dims=hidden_dims,
-    ).to(device)
-
-    with torch.no_grad():
-        compact.patch_embed.proj.weight.copy_(src["patch_embed.proj.weight"][embed_idx].to(device))
-        if src["patch_embed.proj.bias"] is not None:
-            compact.patch_embed.proj.bias.copy_(src["patch_embed.proj.bias"][embed_idx].to(device))
-        compact.cls_token.copy_(src["cls_token"][:, :, embed_idx].to(device))
-        compact.pos_embed.copy_(src["pos_embed"][:, :, embed_idx].to(device))
-
-        for block_idx, block in enumerate(compact.blocks):
-            prefix = f"blocks.{block_idx}."
-            hidx = hidden_idx_by_block[block_idx]
-            e = int(cfg.embed_dim)
-
-            block.norm1.weight.copy_(src[prefix + "norm1.weight"][embed_idx].to(device))
-            block.norm1.bias.copy_(src[prefix + "norm1.bias"][embed_idx].to(device))
-
-            qkv_row_idx = torch.cat([
-                embed_idx,
-                embed_idx + e,
-                embed_idx + 2 * e,
-            ])
-            qkv_col_idx = embed_idx
-            block.attn.in_proj_weight.copy_(src[prefix + "attn.in_proj_weight"][qkv_row_idx][:, qkv_col_idx].to(device))
-            block.attn.in_proj_bias.copy_(src[prefix + "attn.in_proj_bias"][qkv_row_idx].to(device))
-            block.attn.out_proj.weight.copy_(src[prefix + "attn.out_proj.weight"][embed_idx][:, embed_idx].to(device))
-            block.attn.out_proj.bias.copy_(src[prefix + "attn.out_proj.bias"][embed_idx].to(device))
-
-            block.norm2.weight.copy_(src[prefix + "norm2.weight"][embed_idx].to(device))
-            block.norm2.bias.copy_(src[prefix + "norm2.bias"][embed_idx].to(device))
-
-            block.mlp.fc1.weight.copy_(src[prefix + "mlp.fc1.weight"][hidx][:, embed_idx].to(device))
-            block.mlp.fc1.bias.copy_(src[prefix + "mlp.fc1.bias"][hidx].to(device))
-            block.mlp.fc2.weight.copy_(src[prefix + "mlp.fc2.weight"][embed_idx][:, hidx].to(device))
-            block.mlp.fc2.bias.copy_(src[prefix + "mlp.fc2.bias"][embed_idx].to(device))
-
-        compact.norm.weight.copy_(src["norm.weight"][embed_idx].to(device))
-        compact.norm.bias.copy_(src["norm.bias"][embed_idx].to(device))
-        compact.head.weight.copy_(src["head.weight"][:, embed_idx].to(device))
-        compact.head.bias.copy_(src["head.bias"].to(device))
-
-    compact_masks = {name: torch.ones_like(p, dtype=torch.bool, device=p.device) for name, p in compact.named_parameters()}
-    return compact, compact_masks
 
 
 # --- Structured pruning utilities -------------------------------------------
@@ -1378,73 +1113,16 @@ if cfg.pruning_strategy.lower() == "structured":
 else:
     sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
     masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
-    embed_sel = torch.empty(0, dtype=torch.bool)
-    hidden_sel = {}
 
 S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
-
-# Additional safety pass: remove any parameters that no longer lie on a
-# surviving path to the classifier head.
-cleanup_masks, cleanup_stats, reach_embed_sel, reach_hidden_sel = build_reachability_cleanup_masks(
-    model, masks, cfg, scores=sensitivity_scores, seed_embed_sel=embed_sel, seed_hidden_sel=hidden_sel
-)
-apply_masks_(model, cleanup_masks)
-masks = cleanup_masks
-embed_sel = reach_embed_sel
-hidden_sel = reach_hidden_sel
-pruning_stats["reachability_cleanup"] = cleanup_stats
-
-print(f"Pruning complete via strategy={cfg.pruning_strategy.lower()}")
-print(json.dumps(pruning_stats, indent=2))
-
-# Physically remove pruned coordinates so the training loop no longer spends
-# compute on masked parameters.
-precompact_trainable_parameter_count = trainable_parameter_count(model)
-module_density = masked_density_by_module(model, masks)
-
-# Capture the true active-coordinate count from the pre-compaction masks, where
-# False entries still exist for pruned coordinates.  After build_compact_model_from_masks
-# the returned masks are all-ones (the compact model has no dead weights), so
-# summing them would always equal the compact model's full parameter count.
-active_after_masking = sum(int(m.sum().item()) for m in masks.values())
-
-model, masks = build_compact_model_from_masks(
-    model,
-    embed_sel,
-    hidden_sel,
-    cfg,
-    device,
-    source_state=initial_state,
-)
-compact_parameter_count = trainable_parameter_count(model)
-
-if compact_parameter_count >= precompact_trainable_parameter_count:
-    raise RuntimeError(
-        "Structured compaction did not reduce the parameter count. "
-        f"retain_embed={int(embed_sel.sum().item())}/{int(embed_sel.numel())}, "
-        f"retain_hidden={[int(hidden_sel[i].sum().item()) if i in hidden_sel else None for i in range(cfg.depth)]}, "
-        f"precompact={precompact_trainable_parameter_count:,}, compact={compact_parameter_count:,}."
-    )
-
-print(f"Active coordinates after masking : {active_after_masking:,}  "
-      f"({100.0 * active_after_masking / max(1, precompact_trainable_parameter_count):.1f}% of pre-prune params)")
-print(f"Retained embedding channels   : {int(embed_sel.sum().item()):,}/{int(embed_sel.numel()):,}")
-print(f"Retained MLP units per block  : {[int(hidden_sel[i].sum().item()) if i in hidden_sel else None for i in range(cfg.depth)]}")
-print(f"Compact model trainable parameters: {compact_parameter_count:,}  "
-      f"(pruned away {precompact_trainable_parameter_count - compact_parameter_count:,} params physically)")
-
-# Recompute the initial sensitivity reference in the compact model's parameter
-# basis so all Spearman and top-k comparisons use the same coordinate space.
-S_init_compact_dict, _ = compute_sensitivity_scores(
-    model, sens_loader, cfg, device, probes=cfg.sensitivity_probes,
-    masks=masks,
-)
-S_init_active = _flatten_like_model(model, S_init_compact_dict)
+S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
-initial_param_mag_active = _flatten_param_magnitudes(model)
+initial_param_mag_active = _flatten_param_magnitudes(model, masks)
 
-print("Training the compact pruned ViT from scratch")
+print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}")
+print(json.dumps(pruning_stats, indent=2))
+print("Training the pruned ViT from scratch")
 
 
 # -----------------------------------------------------------------------------
@@ -1534,6 +1212,8 @@ for epoch in range(1, cfg.epochs + 1):
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(optimizer)
         scaler.update()
+        apply_masks_(model, masks)
+        zero_masked_optimizer_state_(optimizer, model, masks)
 
         bsz = images.shape[0]
         loss_sum += float(loss.item()) * bsz
@@ -1596,6 +1276,7 @@ S_final_active = _flatten_like_model(model, S_final_dict, only_active=masks)
 eig_final = probe_covariance_eigvals(final_probe_matrix)
 final_param_mag_active = _flatten_param_magnitudes(model, masks)
 final_metrics = evaluate(model, test_loader, criterion, device)
+module_density = masked_density_by_module(model, masks)
 
 
 # -----------------------------------------------------------------------------
@@ -1608,9 +1289,7 @@ summary = {
     "device": str(device),
     "parameter_count": parameter_count(model),
     "trainable_parameter_count": trainable_parameter_count(model),
-    "compact_parameter_count": int(compact_parameter_count),
-    "precompact_trainable_parameter_count": int(precompact_trainable_parameter_count),
-    "active_parameter_count": int(active_after_masking),
+    "active_parameter_count": int(sum(int(m.sum().item()) for m in masks.values())),
     "pruning": pruning_stats,
     "module_density": module_density,
     "final_test_loss": final_metrics["loss"],
@@ -1625,7 +1304,7 @@ summary = {
     "largest_final_probe_cov_eigenvalue": float(eig_final[0].item()) if eig_final is not None and eig_final.numel() else None,
     "probe_cov_effective_rank_final": effective_rank(eig_final) if eig_final is not None else None,
     "history": history,
-    "analysis_note": "Structured pruning uses layerwise-normalized sensitivity, budgeted selection, iterative refinement, and then physically compacts the model so masked coordinates are removed from training.",
+    "analysis_note": "Structured pruning uses layerwise-normalized sensitivity, budgeted selection, and iterative refinement by default; set PRUNING_STRATEGY=threshold to revert.",
 }
 
 summary_path = out_dir / "vit_structured_sensitivity_pruning_summary.json"
