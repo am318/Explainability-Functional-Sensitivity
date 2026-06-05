@@ -809,6 +809,8 @@ def build_reachability_cleanup_masks(
     masks: Dict[str, torch.Tensor],
     cfg: Config,
     scores: Optional[Dict[str, torch.Tensor]] = None,
+    seed_embed_sel: Optional[torch.Tensor] = None,
+    seed_hidden_sel: Optional[Dict[int, torch.Tensor]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor]]:
     """Zero parameters that are not on any surviving path to the classifier head.
 
@@ -816,13 +818,28 @@ def build_reachability_cleanup_masks(
     reachable from the output-side embedding channels, then ANDs that structural
     reachability mask with the current pruning mask so the pass only removes
     additional disconnected coordinates.
+
+    The structured pruning stage may already have selected a compact embedding
+    subset. Treat that subset as the seed so the cleanup can only shrink it when
+    needed for connectivity, rather than accidentally expanding the model back
+    to full width when the classifier head itself is dense.
     """
     head_mask = masks.get("head.weight")
     if head_mask is None:
         raise RuntimeError("Expected head.weight to be present in masks.")
 
     head_scores = scores["head.weight"].abs().mean(dim=0) if scores is not None and "head.weight" in scores else None
-    embed_sel = _ensure_at_least_one_true(head_mask.detach().cpu().bool().any(dim=0), head_scores).to(torch.bool)
+    head_cols = head_mask.detach().cpu().bool().any(dim=0)
+
+    if seed_embed_sel is not None and seed_embed_sel.numel() == head_cols.numel():
+        embed_sel = seed_embed_sel.detach().cpu().bool().clone()
+    else:
+        embed_sel = head_cols.clone()
+
+    # If the head is sparse, intersect with the surviving classifier columns.
+    # If the head is dense, this leaves the structured seed untouched.
+    embed_sel = embed_sel & head_cols
+    embed_sel = _ensure_at_least_one_true(embed_sel, head_scores).to(torch.bool)
 
     hidden_sel: Dict[int, torch.Tensor] = {}
     hidden_total = int(cfg.embed_dim * cfg.mlp_ratio)
@@ -834,11 +851,20 @@ def build_reachability_cleanup_masks(
         fc1_mask = masks.get(fc1_name)
         fc2_mask = masks.get(fc2_name)
         if fc1_mask is None or fc2_mask is None:
-            hidden_sel[block_idx] = torch.ones(hidden_total, dtype=torch.bool)
-            reachable_hidden_total += hidden_total
+            hmask = torch.ones(hidden_total, dtype=torch.bool)
+            if seed_hidden_sel is not None and block_idx in seed_hidden_sel:
+                seed_hmask = seed_hidden_sel[block_idx].detach().cpu().bool()
+                if seed_hmask.numel() == hidden_total:
+                    hmask = seed_hmask.clone()
+            hidden_sel[block_idx] = hmask
+            reachable_hidden_total += int(hmask.sum().item())
             continue
 
         reachable = fc1_mask.detach().cpu().bool()[:, embed_sel].any(dim=1) & fc2_mask.detach().cpu().bool()[embed_sel, :].any(dim=0)
+        if seed_hidden_sel is not None and block_idx in seed_hidden_sel:
+            seed_hmask = seed_hidden_sel[block_idx].detach().cpu().bool()
+            if seed_hmask.numel() == reachable.numel():
+                reachable = reachable & seed_hmask
         fb = None
         if scores is not None:
             if fc1_name in scores:
@@ -1361,7 +1387,7 @@ apply_masks_(model, masks)
 # Additional safety pass: remove any parameters that no longer lie on a
 # surviving path to the classifier head.
 cleanup_masks, cleanup_stats, reach_embed_sel, reach_hidden_sel = build_reachability_cleanup_masks(
-    model, masks, cfg, scores=sensitivity_scores
+    model, masks, cfg, scores=sensitivity_scores, seed_embed_sel=embed_sel, seed_hidden_sel=hidden_sel
 )
 apply_masks_(model, cleanup_masks)
 masks = cleanup_masks
