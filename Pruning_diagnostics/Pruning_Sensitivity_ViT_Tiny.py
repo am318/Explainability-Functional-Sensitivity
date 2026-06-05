@@ -1,18 +1,20 @@
 """
-ViT sensitivity-pruning experiment.
+ViT structured sensitivity-pruning experiment.
 
-This script performs zero-shot sensitivity pruning at initialization, then trains the
-remaining ViT parameters from scratch. It intentionally implements only sensitivity
-pruning: no alternative pruning criteria or comparison baselines are included.
+This script performs zero-shot structured sensitivity pruning at initialization,
+then trains the remaining ViT parameters from scratch. It uses unit-level
+score aggregation, layerwise normalization, budgeted selection, and a short
+iterative refinement pass before training.
 
 Default target: CIFAR-10 with a compact ViT. Use environment variables to change
 model/data/training settings without editing the file.
 
 Example:
-    EPOCHS=100 PRUNE_FRACTION=0.50 BATCH_SIZE=128 python ViT_Sensitivity_Pruning_Experiment.py
+    EPOCHS=100 PRUNE_FRACTION=0.25 BATCH_SIZE=128 python ViT_Sensitivity_Pruning_Experiment.py
 """
 
 import copy
+import re
 import json
 import math
 import os
@@ -96,18 +98,23 @@ class Config:
     prune_norm: bool = _env_bool("PRUNE_NORM", True)
     prune_embeddings: bool = _env_bool("PRUNE_EMBEDDINGS", True)
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
+    pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
+    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.25)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 3)
+    layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
+    preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", True)
 
     batch_size: int = _env_int("BATCH_SIZE", 256)
     epochs: int = _env_int("EPOCHS", 300)
     lr: float = _env_float("LR", 1e-3)
     weight_decay: float = _env_float("WEIGHT_DECAY", 0.05)
     warmup_epochs: int = _env_int("WARMUP_EPOCHS", 10)
-    min_lr: float = _env_float("MIN_LR", 1e-6)
+    min_lr: float = _env_float("MIN_LR", 1e-8)
     num_workers: int = _env_int("NUM_WORKERS", 4)
     grad_clip: float = _env_float("GRAD_CLIP", 1.0)
     label_smoothing: float = _env_float("LABEL_SMOOTHING", 0.1)
     amp: bool = _env_bool("AMP", True)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 5)
 
     # Sweep-style sensitivity diagnostics. These are bounded by default so the
     # script remains viable on ViT-scale parameter counts.
@@ -124,7 +131,7 @@ class Config:
     # Connectivity-preserving threshold pruning. For dense weights this restores
     # at least this many incident coordinates for empty input/output units.
     connectivity_closure: bool = _env_bool("CONNECTIVITY_CLOSURE", True)
-    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 2)
+    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 3)
 
     def __post_init__(self) -> None:
         if self.dataset.upper() not in {"CIFAR10", "CIFAR100"}:
@@ -133,6 +140,12 @@ class Config:
             self.num_classes = 100
         if self.prune_threshold < 0.0:
             raise ValueError("PRUNE_THRESHOLD must be non-negative.")
+        if not (0.0 <= self.prune_fraction < 1.0):
+            raise ValueError("PRUNE_FRACTION must be in [0, 1).")
+        if self.iterative_pruning_rounds < 1:
+            raise ValueError("ITERATIVE_PRUNING_ROUNDS must be at least 1.")
+        if self.pruning_strategy.lower() not in {"structured", "threshold"}:
+            raise ValueError("PRUNING_STRATEGY must be 'structured' or 'threshold'.")
         if self.image_size % self.patch_size != 0:
             raise ValueError("IMAGE_SIZE must be divisible by PATCH_SIZE.")
         self.checkpoint_interval = max(1, self.checkpoint_interval)
@@ -765,6 +778,7 @@ def apply_masks_(model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
             p.mul_(masks[name].to(device=p.device, dtype=p.dtype))
 
 
+
 def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
     for name, p in model.named_parameters():
         state = optimizer.state.get(p)
@@ -775,170 +789,280 @@ def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Mod
             if torch.is_tensor(value) and value.shape == p.shape:
                 value.mul_(mask)
 
-def _linear_input_live_from_output(mask: torch.Tensor, live_output: torch.Tensor) -> torch.Tensor:
-    if mask.ndim != 2:
-        raise ValueError(f"Expected a 2D weight mask, got shape {tuple(mask.shape)}")
-    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
-    if live_output.numel() == 0:
-        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
-    if not bool(live_output.any()):
-        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
-    rows = live_output.nonzero(as_tuple=False).flatten()
-    return mask[rows].any(dim=0)
+
+# --- Structured pruning utilities -------------------------------------------
 
 
-def _conv_input_live_from_output(mask: torch.Tensor, live_output: torch.Tensor) -> torch.Tensor:
-    if mask.ndim != 4:
-        raise ValueError(f"Expected a 4D conv weight mask, got shape {tuple(mask.shape)}")
-    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
-    if live_output.numel() == 0:
-        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
-    if not bool(live_output.any()):
-        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
-    rows = live_output.nonzero(as_tuple=False).flatten()
-    return mask[rows].any(dim=(0, 2, 3))
+def _keep_count(total: int, prune_fraction: float) -> int:
+    return max(1, min(total, int(math.ceil((1.0 - prune_fraction) * total))))
 
 
-def _broadcast_channel_mask(mask: torch.Tensor, live_output: torch.Tensor, live_input: Optional[torch.Tensor] = None) -> torch.Tensor:
-    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
-    if mask.ndim == 1:
-        if live_output.numel() == 0 or not bool(live_output.any()):
-            return torch.zeros_like(mask, dtype=torch.bool)
-        return mask & live_output
-    if mask.ndim == 2:
-        if live_input is None:
-            raise ValueError("live_input is required for 2D masks")
-        live_input = live_input.to(device=mask.device, dtype=torch.bool).reshape(-1)
-        if live_output.numel() == 0 or live_input.numel() == 0 or (not bool(live_output.any())) or (not bool(live_input.any())):
-            return torch.zeros_like(mask, dtype=torch.bool)
-        return mask & live_output.view(-1, 1) & live_input.view(1, -1)
-    if mask.ndim == 3:
-        if live_output.numel() == 0 or not bool(live_output.any()):
-            return torch.zeros_like(mask, dtype=torch.bool)
-        return mask & live_output.view(1, 1, -1)
-    if mask.ndim == 4:
-        if live_input is None:
-            raise ValueError("live_input is required for 4D masks")
-        live_input = live_input.to(device=mask.device, dtype=torch.bool).reshape(-1)
-        if live_output.numel() == 0 or live_input.numel() == 0 or (not bool(live_output.any())) or (not bool(live_input.any())):
-            return torch.zeros_like(mask, dtype=torch.bool)
-        return mask & live_output.view(-1, 1, 1, 1) & live_input.view(1, -1, 1, 1)
-    raise ValueError(f"Unsupported mask rank {mask.ndim}")
+def _normalize_unit_scores(unit_scores: torch.Tensor, cfg: Config) -> torch.Tensor:
+    unit_scores = unit_scores.detach().float().cpu().reshape(-1)
+    if unit_scores.numel() == 0:
+        return unit_scores
+    if not cfg.layerwise_normalize_scores:
+        return unit_scores
+    mean = unit_scores.mean()
+    scale = unit_scores.std(unbiased=False).clamp_min(1e-12)
+    return (unit_scores - mean) / scale
 
 
-def prune_nodes_disconnected_from_output(
+def _tensor_group_scores(name: str, score: torch.Tensor, p: torch.Tensor, cfg: Config) -> Optional[torch.Tensor]:
+    score = score.detach().float().cpu()
+    if score.numel() == 0:
+        return None
+
+    # Embedding/channel-level tensors.
+    if name in {"cls_token", "pos_embed"}:
+        return score.abs().mean(dim=tuple(range(score.ndim - 1)))
+    if "patch_embed.proj.weight" in name and p.ndim == 4:
+        return score.abs().mean(dim=(1, 2, 3))
+    if "patch_embed.proj.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "norm" in name.lower() and p.ndim == 1:
+        return score.abs()
+    if "attn.in_proj_weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=1)
+    if "attn.in_proj_bias" in name and p.ndim == 1:
+        return score.abs()
+    if "attn.out_proj.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=0 if cfg.preserve_attention_heads else 1)
+    if "attn.out_proj.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "mlp.fc2.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=0)
+    if "mlp.fc2.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "head.weight" in name and p.ndim == 2:
+        # Select classifier input channels, not class rows.
+        return score.abs().mean(dim=0)
+    if "head.bias" in name and p.ndim == 1:
+        return score.abs()
+    return None
+
+
+def _hidden_unit_scores(name: str, score: torch.Tensor, p: torch.Tensor) -> Optional[torch.Tensor]:
+    score = score.detach().float().cpu()
+    if "mlp.fc1.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=1)
+    if "mlp.fc1.bias" in name and p.ndim == 1:
+        return score.abs()
+    return None
+
+
+def _build_structured_selection_masks(
     model: nn.Module,
-    masks: Dict[str, torch.Tensor],
+    scores: Dict[str, torch.Tensor],
     cfg: Config,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
-    """Zero channels that do not lie on any path to the classifier output.
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor]]:
+    """Budgeted structured selection over embedding channels and MLP hidden units."""
+    embed_dim = cfg.embed_dim
+    head_dim = max(1, embed_dim // max(1, cfg.num_heads))
+    if cfg.preserve_attention_heads and embed_dim % max(1, cfg.num_heads) == 0:
+        group_size = head_dim
+        n_embed_groups = cfg.num_heads
+    else:
+        group_size = 1
+        n_embed_groups = embed_dim
 
-    This is a conservative reachability closure over the ViT's channel-level
-    connectivity graph. It keeps the classifier head intact, but removes any
-    hidden channel, embedding channel, or projection row/column that cannot
-    influence the logits after the initial elementwise threshold pruning.
-    """
-    refined = {name: mask.clone() for name, mask in masks.items()}
-    zeroed = 0
+    embed_group_scores = torch.zeros(n_embed_groups, dtype=torch.float32)
+    hidden_scores: Dict[int, torch.Tensor] = {}
+    raw_unit_counts = {"embed": 0, "hidden": 0}
 
-    def _set_mask(name: str, new_mask: torch.Tensor) -> None:
-        nonlocal zeroed
-        old = refined[name]
-        zeroed += int((old & ~new_mask).sum().item())
-        refined[name] = old & new_mask
+    for name, p in model.named_parameters():
+        if name not in scores:
+            continue
+        s = scores[name]
+        emb = _tensor_group_scores(name, s, p, cfg)
+        if emb is not None:
+            emb = _normalize_unit_scores(emb, cfg)
+            if "patch_embed.proj.weight" in name and p.ndim == 4:
+                if emb.numel() == embed_dim:
+                    emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif ("cls_token" in name or "pos_embed" in name) and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "attn.in_proj_weight" in name and emb.numel() == 3 * embed_dim:
+                emb = emb[: 3 * n_embed_groups * group_size].reshape(3, n_embed_groups, group_size).mean(dim=(0, 2))
+            elif "attn.in_proj_bias" in name and emb.numel() == 3 * embed_dim:
+                emb = emb[: 3 * n_embed_groups * group_size].reshape(3, n_embed_groups, group_size).mean(dim=(0, 2))
+            elif "attn.out_proj.weight" in name and p.ndim == 2:
+                if emb.numel() == embed_dim:
+                    emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "attn.out_proj.bias" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "mlp.fc2.weight" in name and p.ndim == 2 and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "mlp.fc2.bias" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "head.weight" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "head.bias" in name and emb.numel() == cfg.num_classes:
+                # Class logits are not pruned; ignore.
+                emb = None
+            elif "norm" in name.lower() and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
 
-    # The classifier output is always retained, but only the embedding channels
-    # that still contribute to it are kept alive.
-    head_weight = refined["head.weight"]
-    live = head_weight.any(dim=0)
-    if not bool(live.any()):
-        # Preserve at least one channel so the network remains well-formed.
-        col = int(torch.argmax(head_weight.abs().sum(dim=0)).item())
-        live[col] = True
+            if emb is not None and emb.numel() == n_embed_groups:
+                embed_group_scores.add_(emb.float())
+                raw_unit_counts["embed"] += 1
 
-    _set_mask("head.weight", _broadcast_channel_mask(head_weight, torch.ones(head_weight.shape[0], dtype=torch.bool, device=head_weight.device), live))
-    if "head.bias" in refined:
-        _set_mask("head.bias", refined["head.bias"])
+        # Extra embed-channel contributions from MLP projections.
+        if "mlp.fc1.weight" in name and p.ndim == 2:
+            embed_contrib = _normalize_unit_scores(s.abs().mean(dim=0), cfg)
+            if embed_contrib.numel() == embed_dim:
+                if embed_contrib.numel() == n_embed_groups * group_size:
+                    embed_contrib = embed_contrib.reshape(n_embed_groups, group_size).mean(dim=1)
+                elif embed_contrib.numel() != n_embed_groups:
+                    embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+                embed_group_scores.add_(embed_contrib.float())
+                raw_unit_counts["embed"] += 1
+        if "mlp.fc2.weight" in name and p.ndim == 2:
+            embed_contrib = _normalize_unit_scores(s.abs().mean(dim=1), cfg)
+            if embed_contrib.numel() == embed_dim:
+                if embed_contrib.numel() == n_embed_groups * group_size:
+                    embed_contrib = embed_contrib.reshape(n_embed_groups, group_size).mean(dim=1)
+                elif embed_contrib.numel() != n_embed_groups:
+                    embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+                embed_group_scores.add_(embed_contrib.float())
+                raw_unit_counts["embed"] += 1
 
-    # Final LayerNorm consumes the same live embedding channels as the head.
-    if "norm.weight" in refined:
-        _set_mask("norm.weight", _broadcast_channel_mask(refined["norm.weight"], live))
-    if "norm.bias" in refined:
-        _set_mask("norm.bias", _broadcast_channel_mask(refined["norm.bias"], live))
+        hid = _hidden_unit_scores(name, s, p)
+        if hid is not None:
+            hid = _normalize_unit_scores(hid, cfg)
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            if block_match:
+                idx = int(block_match.group(1))
+                hidden_scores.setdefault(idx, torch.zeros_like(hid))
+                hidden_scores[idx].add_(hid.float())
+                raw_unit_counts["hidden"] += 1
 
-    # Propagate backwards through transformer blocks.
-    for idx in reversed(range(cfg.depth)):
-        prefix = f"blocks.{idx}"
+    embed_keep = _keep_count(n_embed_groups, cfg.prune_fraction)
+    embed_sel = torch.zeros(n_embed_groups, dtype=torch.bool)
+    embed_sel[torch.topk(embed_group_scores, k=embed_keep, largest=True, sorted=False).indices] = True
+    embed_channel_sel = embed_sel.repeat_interleave(group_size)
+    if embed_channel_sel.numel() < embed_dim:
+        pad = torch.zeros(embed_dim - embed_channel_sel.numel(), dtype=torch.bool)
+        embed_channel_sel = torch.cat([embed_channel_sel, pad], dim=0)
+    elif embed_channel_sel.numel() > embed_dim:
+        embed_channel_sel = embed_channel_sel[:embed_dim]
 
-        fc2_w = refined[f"{prefix}.mlp.fc2.weight"]
-        live_mlp_hidden = _linear_input_live_from_output(fc2_w, live)
-        live_mlp_input = torch.zeros(fc2_w.shape[1], dtype=torch.bool, device=fc2_w.device)
-        if bool(live_mlp_hidden.any()):
-            live_mlp_input = _linear_input_live_from_output(refined[f"{prefix}.mlp.fc1.weight"], live_mlp_hidden)
+    hidden_sel: Dict[int, torch.Tensor] = {}
+    for idx, hs in hidden_scores.items():
+        keep = _keep_count(hs.numel(), cfg.prune_fraction)
+        sel = torch.zeros_like(hs, dtype=torch.bool)
+        sel[torch.topk(hs, k=keep, largest=True, sorted=False).indices] = True
+        hidden_sel[idx] = sel
 
-        out_proj_w = refined[f"{prefix}.attn.out_proj.weight"]
-        live_attn_hidden = _linear_input_live_from_output(out_proj_w, live)
-        live_attn_input = torch.zeros(out_proj_w.shape[1], dtype=torch.bool, device=out_proj_w.device)
-        if bool(live_attn_hidden.any()):
-            in_proj_w = refined[f"{prefix}.attn.in_proj_weight"]
-            qkv_live = live_attn_hidden.repeat(3)
-            live_attn_input = _linear_input_live_from_output(in_proj_w, qkv_live)
+    masks: Dict[str, torch.Tensor] = {}
+    restored_total = 0
+    eligible_total = 0
+    retained_total = 0
 
-        block_live = live.clone()
-        if live_mlp_input.numel():
-            block_live |= live_mlp_input
-        if live_attn_input.numel():
-            block_live |= live_attn_input
+    for name, p in model.named_parameters():
+        if not is_prunable_parameter(name, p, cfg):
+            masks[name] = torch.ones_like(p, dtype=torch.bool)
+            continue
+        eligible_total += p.numel()
+        if name in {"cls_token", "pos_embed"}:
+            mask = embed_channel_sel.view(1, 1, -1).expand_as(p).clone()
+        elif "patch_embed.proj.weight" in name and p.ndim == 4:
+            mask = embed_channel_sel.view(-1, 1, 1, 1).expand_as(p).clone()
+        elif "patch_embed.proj.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "attn.in_proj_weight" in name and p.ndim == 2:
+            mask = embed_channel_sel.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+        elif "attn.in_proj_bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.repeat(3).clone()
+        elif "attn.out_proj.weight" in name and p.ndim == 2:
+            mask = embed_channel_sel.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+        elif "attn.out_proj.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "mlp.fc2.weight" in name and p.ndim == 2:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc2", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[1], dtype=torch.bool))
+            mask = embed_channel_sel.view(-1, 1).expand(p.shape[0], p.shape[1]) & hmask.view(1, -1)
+        elif "mlp.fc2.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "mlp.fc1.weight" in name and p.ndim == 2:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[0], dtype=torch.bool))
+            mask = hmask.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+        elif "mlp.fc1.bias" in name and p.ndim == 1:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            mask = hidden_sel.get(block_idx, torch.ones_like(p, dtype=torch.bool)).clone()
+        elif "norm" in name.lower() and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "head.weight" in name and p.ndim == 2:
+            mask = embed_channel_sel.view(1, -1).expand_as(p).clone()
+        elif "head.bias" in name and p.ndim == 1:
+            mask = torch.ones_like(p, dtype=torch.bool)
+        else:
+            mask = torch.ones_like(p, dtype=torch.bool)
 
-        # Norms and residual channels.
-        for suffix in ("norm1.weight", "norm1.bias", "norm2.weight", "norm2.bias"):
-            key = f"{prefix}.{suffix}"
-            if key in refined:
-                _set_mask(key, _broadcast_channel_mask(refined[key], block_live))
-
-        # MLP branch.
-        _set_mask(f"{prefix}.mlp.fc2.weight", _broadcast_channel_mask(fc2_w, live, live_mlp_hidden))
-        if f"{prefix}.mlp.fc2.bias" in refined:
-            _set_mask(f"{prefix}.mlp.fc2.bias", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc2.bias"], live))
-        _set_mask(f"{prefix}.mlp.fc1.weight", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc1.weight"], live_mlp_hidden, block_live))
-        if f"{prefix}.mlp.fc1.bias" in refined:
-            _set_mask(f"{prefix}.mlp.fc1.bias", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc1.bias"], live_mlp_hidden))
-
-        # Attention branch.
-        if f"{prefix}.attn.out_proj.weight" in refined:
-            _set_mask(f"{prefix}.attn.out_proj.weight", _broadcast_channel_mask(out_proj_w, live, live_attn_hidden))
-        if f"{prefix}.attn.out_proj.bias" in refined:
-            _set_mask(f"{prefix}.attn.out_proj.bias", _broadcast_channel_mask(refined[f"{prefix}.attn.out_proj.bias"], live))
-        if f"{prefix}.attn.in_proj_weight" in refined:
-            in_proj_w = refined[f"{prefix}.attn.in_proj_weight"]
-            row_live = live_attn_hidden.repeat(3)
-            _set_mask(f"{prefix}.attn.in_proj_weight", _broadcast_channel_mask(in_proj_w, row_live, block_live))
-        if f"{prefix}.attn.in_proj_bias" in refined:
-            _set_mask(f"{prefix}.attn.in_proj_bias", _broadcast_channel_mask(refined[f"{prefix}.attn.in_proj_bias"], live_attn_hidden.repeat(3)))
-
-        live = block_live
-
-    # Patch embedding outputs feed the first block input.
-    if "patch_embed.proj.weight" in refined:
-        proj_w = refined["patch_embed.proj.weight"]
-        _set_mask("patch_embed.proj.weight", _broadcast_channel_mask(proj_w, live, torch.ones(proj_w.shape[1], dtype=torch.bool, device=proj_w.device)))
-    if "patch_embed.proj.bias" in refined:
-        _set_mask("patch_embed.proj.bias", _broadcast_channel_mask(refined["patch_embed.proj.bias"], live))
-    if "cls_token" in refined:
-        _set_mask("cls_token", _broadcast_channel_mask(refined["cls_token"], live))
-    if "pos_embed" in refined:
-        pos_mask = refined["pos_embed"].clone()
-        pos_mask &= live.view(1, 1, -1)
-        _set_mask("pos_embed", pos_mask)
+        if cfg.connectivity_closure and p.ndim in (2, 4):
+            # Keep at least one coordinate per row/column group after structured masking.
+            restored_total += _connectivity_close_dense_weight(mask, scores[name].to(mask.device), max(1, cfg.min_connections_per_unit))
+        if int(mask.sum().item()) == 0:
+            idx = torch.argmax(scores[name].reshape(-1))
+            mask.reshape(-1)[idx] = True
+            restored_total += 1
+        retained_total += int(mask.sum().item())
+        masks[name] = mask
 
     stats = {
-        "output_reachability_closure": True,
-        "disconnected_parameter_coordinates_zeroed": float(zeroed),
-        "reachable_embedding_channel_count": float(int(live.sum().item())),
-        "reachable_embedding_channel_fraction": float(int(live.sum().item()) / max(1, live.numel())),
+        "eligible_parameter_count": float(eligible_total),
+        "retained_eligible_parameter_count": float(retained_total),
+        "pruned_eligible_parameter_count": float(max(0, eligible_total - retained_total)),
+        "actual_prune_fraction_eligible": float(max(0, eligible_total - retained_total) / max(1, eligible_total)),
+        "pruning_strategy": cfg.pruning_strategy.lower(),
+        "prune_fraction": float(cfg.prune_fraction),
+        "iterative_pruning_rounds": int(cfg.iterative_pruning_rounds),
+        "layerwise_normalize_scores": bool(cfg.layerwise_normalize_scores),
+        "preserve_attention_heads": bool(cfg.preserve_attention_heads),
+        "connectivity_restored_coordinate_count": float(restored_total),
+        "embed_groups": float(n_embed_groups),
+        "embed_groups_retained": float(int(embed_sel.sum().item())),
+        "embed_group_keep_fraction": float(int(embed_sel.sum().item()) / max(1, n_embed_groups)),
+        "hidden_block_count": float(len(hidden_scores)),
     }
-    return refined, stats
+    return masks, stats, embed_sel, hidden_sel
 
+
+def build_structured_masks_iterative(
+    model: nn.Module,
+    loader: DataLoader,
+    cfg: Config,
+    device: torch.device,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor], Dict[str, torch.Tensor]]:
+    """Iteratively recompute sensitivities and refine a structured mask."""
+    final_masks: Dict[str, torch.Tensor] = {}
+    final_stats: Dict[str, float] = {}
+    final_embed_sel = torch.empty(0, dtype=torch.bool)
+    final_hidden_sel: Dict[int, torch.Tensor] = {}
+    final_scores: Dict[str, torch.Tensor] = {}
+
+    for round_idx in range(cfg.iterative_pruning_rounds):
+        scores, _ = compute_sensitivity_scores(
+            model,
+            loader,
+            cfg,
+            device,
+            probes=cfg.sensitivity_probes,
+        )
+        final_scores = scores
+        masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(model, scores, cfg)
+        final_masks = masks
+        final_stats = stats
+        final_embed_sel = embed_sel
+        final_hidden_sel = hidden_sel
+        apply_masks_(model, masks)
+
+    final_stats["iterative_rounds_completed"] = float(cfg.iterative_pruning_rounds)
+    return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
 
 
 def masked_density_by_module(model: nn.Module, masks: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, int | float]]:
@@ -978,18 +1102,21 @@ print(f"Dataset: {cfg.dataset.upper()} | train={len(train_set)} | sensitivity={l
 print(f"Model trainable parameters before pruning: {trainable_parameter_count(model):,}")
 print("Computing zero-shot sensitivity scores at initialization")
 
-sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
+if cfg.pruning_strategy.lower() == "structured":
+    masks, pruning_stats, embed_sel, hidden_sel, sensitivity_scores = build_structured_masks_iterative(
+        model, sens_loader, cfg, device
+    )
+else:
+    sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+    masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
 
-masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
-masks, output_reachability_stats = prune_nodes_disconnected_from_output(model, masks, cfg)
-pruning_stats.update(output_reachability_stats)
+S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
 S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
 initial_param_mag_active = _flatten_param_magnitudes(model, masks)
 
-print("Sensitivity threshold pruning complete")
+print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}")
 print(json.dumps(pruning_stats, indent=2))
 print("Training the pruned ViT from scratch")
 
@@ -1152,7 +1279,7 @@ module_density = masked_density_by_module(model, masks)
 # Save outputs and sweep-style plots
 # -----------------------------------------------------------------------------
 
-run_tag = f"{cfg.dataset.lower()}_vit_tiny_{parameter_count(model)}_params"
+run_tag = f"{cfg.dataset.lower()}_vit_tiny_structured_{parameter_count(model)}_params"
 summary = {
     "config": asdict(cfg),
     "device": str(device),
@@ -1173,10 +1300,10 @@ summary = {
     "largest_final_probe_cov_eigenvalue": float(eig_final[0].item()) if eig_final is not None and eig_final.numel() else None,
     "probe_cov_effective_rank_final": effective_rank(eig_final) if eig_final is not None else None,
     "history": history,
-    "analysis_note": "Covariance/eigenspectrum uses bounded probe-gradient covariance by default; set FULL_JACOBIAN_ANALYSIS=1 for small models only.",
+    "analysis_note": "Structured pruning uses layerwise-normalized sensitivity, budgeted selection, and iterative refinement by default; set PRUNING_STRATEGY=threshold to revert.",
 }
 
-summary_path = out_dir / "vit_threshold_connectivity_pruning_summary.json"
+summary_path = out_dir / "vit_structured_sensitivity_pruning_summary.json"
 save_json(summary_path, summary)
 
 # checkpoint_path = out_dir / "vit_threshold_connectivity_pruned_final.pt"
