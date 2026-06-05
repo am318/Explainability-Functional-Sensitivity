@@ -1371,10 +1371,20 @@ print(json.dumps(pruning_stats, indent=2))
 # compute on masked parameters.
 precompact_trainable_parameter_count = trainable_parameter_count(model)
 module_density = masked_density_by_module(model, masks)
-model, masks = build_compact_model_from_masks(model, embed_sel, hidden_sel, cfg, device)
 
+# Capture the true active-coordinate count from the pre-compaction masks, where
+# False entries still exist for pruned coordinates.  After build_compact_model_from_masks
+# the returned masks are all-ones (the compact model has no dead weights), so
+# summing them would always equal the compact model's full parameter count.
 active_after_masking = sum(int(m.sum().item()) for m in masks.values())
-print(f"Active coordinates after masking: {active_after_masking:,}")
+
+model, masks = build_compact_model_from_masks(model, embed_sel, hidden_sel, cfg, device)
+compact_parameter_count = trainable_parameter_count(model)
+
+print(f"Active coordinates after masking : {active_after_masking:,}  "
+      f"({100.0 * active_after_masking / max(1, precompact_trainable_parameter_count):.1f}% of pre-prune params)")
+print(f"Compact model trainable parameters: {compact_parameter_count:,}  "
+      f"(pruned away {precompact_trainable_parameter_count - compact_parameter_count:,} params physically)")
 
 # Recompute the initial sensitivity reference in the compact model's parameter
 # basis so all Spearman and top-k comparisons use the same coordinate space.
@@ -1550,8 +1560,9 @@ summary = {
     "device": str(device),
     "parameter_count": parameter_count(model),
     "trainable_parameter_count": trainable_parameter_count(model),
+    "compact_parameter_count": int(compact_parameter_count),
     "precompact_trainable_parameter_count": int(precompact_trainable_parameter_count),
-    "active_parameter_count": int(sum(int(m.sum().item()) for m in masks.values())),
+    "active_parameter_count": int(active_after_masking),
     "pruning": pruning_stats,
     "module_density": module_density,
     "final_test_loss": final_metrics["loss"],
@@ -1725,4 +1736,3 @@ print("\nFinal summary")
 print("=============")
 print(json.dumps({k: v for k, v in summary.items() if k != "history"}, indent=2))
 print(f"Wrote summary to {summary_path}")
-# print(f"Wrote checkpoint to {checkpoint_path}")
