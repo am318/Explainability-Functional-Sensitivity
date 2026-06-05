@@ -1372,10 +1372,9 @@ print(json.dumps(pruning_stats, indent=2))
 precompact_trainable_parameter_count = trainable_parameter_count(model)
 module_density = masked_density_by_module(model, masks)
 model, masks = build_compact_model_from_masks(model, embed_sel, hidden_sel, cfg, device)
-print(
-    f"Compact model built: trainable parameters {trainable_parameter_count(model):,} "
-    f"(from {precompact_trainable_parameter_count:,} after masking)"
-)
+
+active_after_masking = sum(int(m.sum().item()) for m in masks.values())
+print(f"Active coordinates after masking: {active_after_masking:,}")
 
 # Recompute the initial sensitivity reference in the compact model's parameter
 # basis so all Spearman and top-k comparisons use the same coordinate space.
