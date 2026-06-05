@@ -333,8 +333,6 @@ class CIFAR100Dataset(torch.utils.data.Dataset):
         return image, target
 
 
-
-
 def _subset(dataset, n: int, seed: int):
     if n <= 0 or n >= len(dataset):
         return dataset
@@ -1388,10 +1386,6 @@ for epoch in range(1, cfg.epochs + 1):
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(optimizer)
         scaler.update()
-
-        # These are now no-ops because `masks` is all-ones on the rebuilt model.
-        apply_masks_(model, masks)
-        zero_masked_optimizer_state_(optimizer, model, masks)
 
         bsz = images.shape[0]
         loss_sum += float(loss.item()) * bsz
