@@ -1053,6 +1053,36 @@ def _build_structured_selection_masks(
     return masks, stats, embed_sel, hidden_sel
 
 
+def _intersect_and_keep_one(
+    candidate: torch.Tensor,
+    previous: torch.Tensor,
+    score: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Cumulative pruning step:
+    - keep only coordinates that survived previous rounds
+    - if that would empty the tensor, keep the best surviving coordinate
+    """
+    candidate = candidate & previous
+    if int(candidate.sum().item()) > 0:
+        return candidate
+
+    prev_flat = previous.reshape(-1).bool()
+    out = torch.zeros_like(candidate, dtype=torch.bool)
+
+    if int(prev_flat.sum().item()) > 0:
+        score_flat = score.reshape(-1).detach().float().clone()
+        score_flat = score_flat.masked_fill(~prev_flat, float("-inf"))
+        idx = torch.argmax(score_flat)
+        out.reshape(-1)[idx] = True
+    else:
+        # Fallback safety: should not normally happen, but keeps the tensor non-empty.
+        idx = torch.argmax(score.reshape(-1))
+        out.reshape(-1)[idx] = True
+
+    return out
+
+
 def build_structured_masks_iterative(
     model: nn.Module,
     loader: DataLoader,
@@ -1060,7 +1090,13 @@ def build_structured_masks_iterative(
     device: torch.device,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor], Dict[str, torch.Tensor]]:
     """Iteratively recompute sensitivities and refine a structured mask."""
-    final_masks: Dict[str, torch.Tensor] = {}
+    params = dict(model.named_parameters())
+    active_masks: Dict[str, torch.Tensor] = {
+        name: torch.ones_like(p, dtype=torch.bool, device=p.device)
+        for name, p in params.items()
+    }
+
+    final_masks: Dict[str, torch.Tensor] = active_masks
     final_stats: Dict[str, float] = {}
     final_embed_sel = torch.empty(0, dtype=torch.bool)
     final_hidden_sel: Dict[int, torch.Tensor] = {}
@@ -1076,24 +1112,40 @@ def build_structured_masks_iterative(
             probes=cfg.sensitivity_probes,
         )
         final_scores = scores
+
         round_prune_fraction = _iterative_prune_fraction(cfg, round_idx)
         round_fractions.append(round_prune_fraction)
-        masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
+
+        candidate_masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
             model,
             scores,
             cfg,
             prune_fraction=round_prune_fraction,
         )
-        final_masks = masks
+
+        # Make pruning cumulative without changing the round schedule.
+        for name, cand in candidate_masks.items():
+            if is_prunable_parameter(name, params[name], cfg):
+                candidate_masks[name] = _intersect_and_keep_one(
+                    cand.to(device=params[name].device, dtype=torch.bool),
+                    active_masks[name],
+                    scores[name].to(device=params[name].device),
+                )
+            else:
+                candidate_masks[name] = cand.to(device=params[name].device, dtype=torch.bool)
+
+        final_masks = candidate_masks
         final_stats = stats
         final_embed_sel = embed_sel
         final_hidden_sel = hidden_sel
-        apply_masks_(model, masks)
+        active_masks = candidate_masks
+        apply_masks_(model, candidate_masks)
 
     final_stats["iterative_rounds_completed"] = float(cfg.iterative_pruning_rounds)
     final_stats["gradual_sparsification"] = bool(cfg.gradual_sparsification)
     final_stats["round_prune_fraction_schedule"] = [float(x) for x in round_fractions]
     final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(cfg.prune_fraction)
+    final_stats["cumulative_iterative_pruning"] = True
     return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
 
 
