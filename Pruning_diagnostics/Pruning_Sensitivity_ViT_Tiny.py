@@ -949,9 +949,15 @@ def build_compact_model_from_masks(
     hidden_sel: Dict[int, torch.Tensor],
     cfg: Config,
     device: torch.device,
+    source_state: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[nn.Module, Dict[str, torch.Tensor]]:
-    """Physically remove masked channels/units so training no longer touches them."""
-    src = model.state_dict()
+    """Physically remove masked channels/units so training no longer touches them.
+
+    The compact model is built from the selected coordinates only, and the
+    parameter tensors are sourced from the masked initialization state so the
+    result is exactly the masked version of the initialized network.
+    """
+    src = model.state_dict() if source_state is None else source_state
     embed_idx = torch.where(embed_sel.detach().cpu().bool())[0].to(torch.long)
     if embed_idx.numel() == 0:
         raise RuntimeError("No embedding channels were retained; cannot build a compact model.")
@@ -991,7 +997,6 @@ def build_compact_model_from_masks(
             prefix = f"blocks.{block_idx}."
             hidx = hidden_idx_by_block[block_idx]
             e = int(cfg.embed_dim)
-            new_e = compact_embed_dim
 
             block.norm1.weight.copy_(src[prefix + "norm1.weight"][embed_idx].to(device))
             block.norm1.bias.copy_(src[prefix + "norm1.bias"][embed_idx].to(device))
@@ -1378,11 +1383,28 @@ module_density = masked_density_by_module(model, masks)
 # summing them would always equal the compact model's full parameter count.
 active_after_masking = sum(int(m.sum().item()) for m in masks.values())
 
-model, masks = build_compact_model_from_masks(model, embed_sel, hidden_sel, cfg, device)
+model, masks = build_compact_model_from_masks(
+    model,
+    embed_sel,
+    hidden_sel,
+    cfg,
+    device,
+    source_state=initial_state,
+)
 compact_parameter_count = trainable_parameter_count(model)
+
+if compact_parameter_count >= precompact_trainable_parameter_count:
+    raise RuntimeError(
+        "Structured compaction did not reduce the parameter count. "
+        f"retain_embed={int(embed_sel.sum().item())}/{int(embed_sel.numel())}, "
+        f"retain_hidden={[int(hidden_sel[i].sum().item()) if i in hidden_sel else None for i in range(cfg.depth)]}, "
+        f"precompact={precompact_trainable_parameter_count:,}, compact={compact_parameter_count:,}."
+    )
 
 print(f"Active coordinates after masking : {active_after_masking:,}  "
       f"({100.0 * active_after_masking / max(1, precompact_trainable_parameter_count):.1f}% of pre-prune params)")
+print(f"Retained embedding channels   : {int(embed_sel.sum().item()):,}/{int(embed_sel.numel()):,}")
+print(f"Retained MLP units per block  : {[int(hidden_sel[i].sum().item()) if i in hidden_sel else None for i in range(cfg.depth)]}")
 print(f"Compact model trainable parameters: {compact_parameter_count:,}  "
       f"(pruned away {precompact_trainable_parameter_count - compact_parameter_count:,} params physically)")
 
