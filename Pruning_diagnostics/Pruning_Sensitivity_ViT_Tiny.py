@@ -971,7 +971,11 @@ def _build_structured_selection_masks(
         elif "patch_embed.proj.bias" in name and p.ndim == 1:
             mask = embed_channel_sel.clone()
         elif "attn.in_proj_weight" in name and p.ndim == 2:
-            mask = embed_channel_sel.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+            row_sel = embed_channel_sel.repeat(3)
+            if row_sel.numel() != p.shape[0]:
+                row_sel = row_sel[:p.shape[0]] if row_sel.numel() > p.shape[0] else torch.cat([row_sel, torch.zeros(p.shape[0] - row_sel.numel(), dtype=torch.bool)], dim=0)
+            col_sel = embed_channel_sel
+            mask = row_sel.view(-1, 1).expand_as(p).clone() & col_sel.view(1, -1).expand_as(p)
         elif "attn.in_proj_bias" in name and p.ndim == 1:
             mask = embed_channel_sel.repeat(3).clone()
         elif "attn.out_proj.weight" in name and p.ndim == 2:
