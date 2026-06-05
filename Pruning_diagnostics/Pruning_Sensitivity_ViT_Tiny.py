@@ -76,13 +76,13 @@ class Config:
     output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_sensitivity_pruning")
     download: bool = _env_bool("DOWNLOAD", True)
 
-    image_size: int = _env_int("IMAGE_SIZE", 32)
+    image_size: int = _env_int("IMAGE_SIZE", 64)
     num_classes: int = _env_int("NUM_CLASSES", 10)
     train_subset: int = _env_int("TRAIN_SUBSET", 0)       # 0 means full train set
     test_subset: int = _env_int("TEST_SUBSET", 0)         # 0 means full test set
-    sensitivity_samples: int = _env_int("SENSITIVITY_SAMPLES", 1024)
-    sensitivity_batch_size: int = _env_int("SENSITIVITY_BATCH_SIZE", 64)
-    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 1)
+    sensitivity_samples: int = _env_int("SENSITIVITY_SAMPLES", 8192)
+    sensitivity_batch_size: int = _env_int("SENSITIVITY_BATCH_SIZE", 512)
+    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 8)
 
     patch_size: int = _env_int("PATCH_SIZE", 4)
     embed_dim: int = _env_int("EMBED_DIM", 192)
@@ -91,23 +91,23 @@ class Config:
     mlp_ratio: float = _env_float("MLP_RATIO", 4.0)
     dropout: float = _env_float("DROPOUT", 0.0)
 
-    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-10)
-    prune_bias: bool = _env_bool("PRUNE_BIAS", False)
-    prune_norm: bool = _env_bool("PRUNE_NORM", False)
+    prune_threshold: float = _env_float("PRUNE_THRESHOLD", 1e-6)
+    prune_bias: bool = _env_bool("PRUNE_BIAS", True)
+    prune_norm: bool = _env_bool("PRUNE_NORM", True)
     prune_embeddings: bool = _env_bool("PRUNE_EMBEDDINGS", True)
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
 
-    batch_size: int = _env_int("BATCH_SIZE", 128)
-    epochs: int = _env_int("EPOCHS", 100)
-    lr: float = _env_float("LR", 3e-4)
+    batch_size: int = _env_int("BATCH_SIZE", 256)
+    epochs: int = _env_int("EPOCHS", 300)
+    lr: float = _env_float("LR", 1e-3)
     weight_decay: float = _env_float("WEIGHT_DECAY", 0.05)
-    warmup_epochs: int = _env_int("WARMUP_EPOCHS", 5)
+    warmup_epochs: int = _env_int("WARMUP_EPOCHS", 10)
     min_lr: float = _env_float("MIN_LR", 1e-6)
-    num_workers: int = _env_int("NUM_WORKERS", 2)
+    num_workers: int = _env_int("NUM_WORKERS", 4)
     grad_clip: float = _env_float("GRAD_CLIP", 1.0)
     label_smoothing: float = _env_float("LABEL_SMOOTHING", 0.1)
     amp: bool = _env_bool("AMP", True)
-    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 1)
+    checkpoint_interval: int = _env_int("CHECKPOINT_INTERVAL", 10)
 
     # Sweep-style sensitivity diagnostics. These are bounded by default so the
     # script remains viable on ViT-scale parameter counts.
@@ -124,7 +124,7 @@ class Config:
     # Connectivity-preserving threshold pruning. For dense weights this restores
     # at least this many incident coordinates for empty input/output units.
     connectivity_closure: bool = _env_bool("CONNECTIVITY_CLOSURE", True)
-    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 1)
+    min_connections_per_unit: int = _env_int("MIN_CONNECTIONS_PER_UNIT", 2)
 
     def __post_init__(self) -> None:
         if self.dataset.upper() not in {"CIFAR10", "CIFAR100"}:
@@ -775,6 +775,171 @@ def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Mod
             if torch.is_tensor(value) and value.shape == p.shape:
                 value.mul_(mask)
 
+def _linear_input_live_from_output(mask: torch.Tensor, live_output: torch.Tensor) -> torch.Tensor:
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a 2D weight mask, got shape {tuple(mask.shape)}")
+    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
+    if live_output.numel() == 0:
+        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
+    if not bool(live_output.any()):
+        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
+    rows = live_output.nonzero(as_tuple=False).flatten()
+    return mask[rows].any(dim=0)
+
+
+def _conv_input_live_from_output(mask: torch.Tensor, live_output: torch.Tensor) -> torch.Tensor:
+    if mask.ndim != 4:
+        raise ValueError(f"Expected a 4D conv weight mask, got shape {tuple(mask.shape)}")
+    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
+    if live_output.numel() == 0:
+        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
+    if not bool(live_output.any()):
+        return torch.zeros(mask.shape[1], dtype=torch.bool, device=mask.device)
+    rows = live_output.nonzero(as_tuple=False).flatten()
+    return mask[rows].any(dim=(0, 2, 3))
+
+
+def _broadcast_channel_mask(mask: torch.Tensor, live_output: torch.Tensor, live_input: Optional[torch.Tensor] = None) -> torch.Tensor:
+    live_output = live_output.to(device=mask.device, dtype=torch.bool).reshape(-1)
+    if mask.ndim == 1:
+        if live_output.numel() == 0 or not bool(live_output.any()):
+            return torch.zeros_like(mask, dtype=torch.bool)
+        return mask & live_output
+    if mask.ndim == 2:
+        if live_input is None:
+            raise ValueError("live_input is required for 2D masks")
+        live_input = live_input.to(device=mask.device, dtype=torch.bool).reshape(-1)
+        if live_output.numel() == 0 or live_input.numel() == 0 or (not bool(live_output.any())) or (not bool(live_input.any())):
+            return torch.zeros_like(mask, dtype=torch.bool)
+        return mask & live_output.view(-1, 1) & live_input.view(1, -1)
+    if mask.ndim == 3:
+        if live_output.numel() == 0 or not bool(live_output.any()):
+            return torch.zeros_like(mask, dtype=torch.bool)
+        return mask & live_output.view(1, 1, -1)
+    if mask.ndim == 4:
+        if live_input is None:
+            raise ValueError("live_input is required for 4D masks")
+        live_input = live_input.to(device=mask.device, dtype=torch.bool).reshape(-1)
+        if live_output.numel() == 0 or live_input.numel() == 0 or (not bool(live_output.any())) or (not bool(live_input.any())):
+            return torch.zeros_like(mask, dtype=torch.bool)
+        return mask & live_output.view(-1, 1, 1, 1) & live_input.view(1, -1, 1, 1)
+    raise ValueError(f"Unsupported mask rank {mask.ndim}")
+
+
+def prune_nodes_disconnected_from_output(
+    model: nn.Module,
+    masks: Dict[str, torch.Tensor],
+    cfg: Config,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    """Zero channels that do not lie on any path to the classifier output.
+
+    This is a conservative reachability closure over the ViT's channel-level
+    connectivity graph. It keeps the classifier head intact, but removes any
+    hidden channel, embedding channel, or projection row/column that cannot
+    influence the logits after the initial elementwise threshold pruning.
+    """
+    refined = {name: mask.clone() for name, mask in masks.items()}
+    zeroed = 0
+
+    def _set_mask(name: str, new_mask: torch.Tensor) -> None:
+        nonlocal zeroed
+        old = refined[name]
+        zeroed += int((old & ~new_mask).sum().item())
+        refined[name] = old & new_mask
+
+    # The classifier output is always retained, but only the embedding channels
+    # that still contribute to it are kept alive.
+    head_weight = refined["head.weight"]
+    live = head_weight.any(dim=0)
+    if not bool(live.any()):
+        # Preserve at least one channel so the network remains well-formed.
+        col = int(torch.argmax(head_weight.abs().sum(dim=0)).item())
+        live[col] = True
+
+    _set_mask("head.weight", _broadcast_channel_mask(head_weight, torch.ones(head_weight.shape[0], dtype=torch.bool, device=head_weight.device), live))
+    if "head.bias" in refined:
+        _set_mask("head.bias", refined["head.bias"])
+
+    # Final LayerNorm consumes the same live embedding channels as the head.
+    if "norm.weight" in refined:
+        _set_mask("norm.weight", _broadcast_channel_mask(refined["norm.weight"], live))
+    if "norm.bias" in refined:
+        _set_mask("norm.bias", _broadcast_channel_mask(refined["norm.bias"], live))
+
+    # Propagate backwards through transformer blocks.
+    for idx in reversed(range(cfg.depth)):
+        prefix = f"blocks.{idx}"
+
+        fc2_w = refined[f"{prefix}.mlp.fc2.weight"]
+        live_mlp_hidden = _linear_input_live_from_output(fc2_w, live)
+        live_mlp_input = torch.zeros(fc2_w.shape[1], dtype=torch.bool, device=fc2_w.device)
+        if bool(live_mlp_hidden.any()):
+            live_mlp_input = _linear_input_live_from_output(refined[f"{prefix}.mlp.fc1.weight"], live_mlp_hidden)
+
+        out_proj_w = refined[f"{prefix}.attn.out_proj.weight"]
+        live_attn_hidden = _linear_input_live_from_output(out_proj_w, live)
+        live_attn_input = torch.zeros(out_proj_w.shape[1], dtype=torch.bool, device=out_proj_w.device)
+        if bool(live_attn_hidden.any()):
+            in_proj_w = refined[f"{prefix}.attn.in_proj_weight"]
+            qkv_live = live_attn_hidden.repeat(3)
+            live_attn_input = _linear_input_live_from_output(in_proj_w, qkv_live)
+
+        block_live = live.clone()
+        if live_mlp_input.numel():
+            block_live |= live_mlp_input
+        if live_attn_input.numel():
+            block_live |= live_attn_input
+
+        # Norms and residual channels.
+        for suffix in ("norm1.weight", "norm1.bias", "norm2.weight", "norm2.bias"):
+            key = f"{prefix}.{suffix}"
+            if key in refined:
+                _set_mask(key, _broadcast_channel_mask(refined[key], block_live))
+
+        # MLP branch.
+        _set_mask(f"{prefix}.mlp.fc2.weight", _broadcast_channel_mask(fc2_w, live, live_mlp_hidden))
+        if f"{prefix}.mlp.fc2.bias" in refined:
+            _set_mask(f"{prefix}.mlp.fc2.bias", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc2.bias"], live))
+        _set_mask(f"{prefix}.mlp.fc1.weight", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc1.weight"], live_mlp_hidden, block_live))
+        if f"{prefix}.mlp.fc1.bias" in refined:
+            _set_mask(f"{prefix}.mlp.fc1.bias", _broadcast_channel_mask(refined[f"{prefix}.mlp.fc1.bias"], live_mlp_hidden))
+
+        # Attention branch.
+        if f"{prefix}.attn.out_proj.weight" in refined:
+            _set_mask(f"{prefix}.attn.out_proj.weight", _broadcast_channel_mask(out_proj_w, live, live_attn_hidden))
+        if f"{prefix}.attn.out_proj.bias" in refined:
+            _set_mask(f"{prefix}.attn.out_proj.bias", _broadcast_channel_mask(refined[f"{prefix}.attn.out_proj.bias"], live))
+        if f"{prefix}.attn.in_proj_weight" in refined:
+            in_proj_w = refined[f"{prefix}.attn.in_proj_weight"]
+            row_live = live_attn_hidden.repeat(3)
+            _set_mask(f"{prefix}.attn.in_proj_weight", _broadcast_channel_mask(in_proj_w, row_live, block_live))
+        if f"{prefix}.attn.in_proj_bias" in refined:
+            _set_mask(f"{prefix}.attn.in_proj_bias", _broadcast_channel_mask(refined[f"{prefix}.attn.in_proj_bias"], live_attn_hidden.repeat(3)))
+
+        live = block_live
+
+    # Patch embedding outputs feed the first block input.
+    if "patch_embed.proj.weight" in refined:
+        proj_w = refined["patch_embed.proj.weight"]
+        _set_mask("patch_embed.proj.weight", _broadcast_channel_mask(proj_w, live, torch.ones(proj_w.shape[1], dtype=torch.bool, device=proj_w.device)))
+    if "patch_embed.proj.bias" in refined:
+        _set_mask("patch_embed.proj.bias", _broadcast_channel_mask(refined["patch_embed.proj.bias"], live))
+    if "cls_token" in refined:
+        _set_mask("cls_token", _broadcast_channel_mask(refined["cls_token"], live))
+    if "pos_embed" in refined:
+        pos_mask = refined["pos_embed"].clone()
+        pos_mask &= live.view(1, 1, -1)
+        _set_mask("pos_embed", pos_mask)
+
+    stats = {
+        "output_reachability_closure": True,
+        "disconnected_parameter_coordinates_zeroed": float(zeroed),
+        "reachable_embedding_channel_count": float(int(live.sum().item())),
+        "reachable_embedding_channel_fraction": float(int(live.sum().item()) / max(1, live.numel())),
+    }
+    return refined, stats
+
+
 
 def masked_density_by_module(model: nn.Module, masks: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, int | float]]:
     groups: Dict[str, Dict[str, int]] = {}
@@ -817,6 +982,8 @@ sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, devi
 S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 
 masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
+masks, output_reachability_stats = prune_nodes_disconnected_from_output(model, masks, cfg)
+pruning_stats.update(output_reachability_stats)
 apply_masks_(model, masks)
 S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
