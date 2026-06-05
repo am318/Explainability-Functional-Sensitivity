@@ -652,10 +652,11 @@ def compute_sensitivity_scores(
     scores = init_score_buffers(model)
     n_accum = 0
     probe_rows: List[torch.Tensor] = []
-    active_count = None
     if masks is not None:
         active_count = int(sum(int(m.detach().cpu().bool().sum().item()) for m in masks.values()))
-    can_collect = collect_probe_matrix and masks is not None and active_count is not None
+    else:
+        active_count = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    can_collect = collect_probe_matrix
     if can_collect and active_count * cfg.analysis_probe_matrix_rows > cfg.max_probe_matrix_elements:
         can_collect = False
 
@@ -676,8 +677,11 @@ def compute_sensitivity_scores(
                     g = p.grad.detach().float()
                     scores[name].add_(g.cpu().pow(2), alpha=batch_size)
                     if can_collect and len(probe_rows) < cfg.analysis_probe_matrix_rows:
-                        m = masks[name].to(device=p.device, dtype=torch.bool)
-                        grad_parts.append(g[m].detach().cpu().reshape(-1))
+                        if masks is None:
+                            grad_parts.append(g.detach().cpu().reshape(-1))
+                        else:
+                            m = masks[name].to(device=p.device, dtype=torch.bool)
+                            grad_parts.append(g[m].detach().cpu().reshape(-1))
                 if can_collect and grad_parts and len(probe_rows) < cfg.analysis_probe_matrix_rows:
                     probe_rows.append(torch.cat(grad_parts))
             n_accum += batch_size
@@ -1116,7 +1120,7 @@ S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
 S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
-initial_param_mag_active = _flatten_param_magnitudes(model, masks)
+initial_param_mag_active = _flatten_param_magnitudes(model)
 
 print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}")
 print(json.dumps(pruning_stats, indent=2))
@@ -1327,12 +1331,6 @@ def _build_sparse_model_from_masks(
 # Rebuild a compact model and train that model directly.
 model = _build_sparse_model_from_masks(model, masks, cfg, device)
 
-# Identity masks for the compact model; keep downstream code unchanged.
-masks = {
-    name: torch.ones_like(p, dtype=torch.bool, device=p.device)
-    for name, p in model.named_parameters()
-}
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
 
@@ -1353,11 +1351,10 @@ S_init_dict, init_probe_matrix = compute_sensitivity_scores(
     device,
     probes=cfg.analysis_probes,
     collect_probe_matrix=True,
-    masks=masks,
 )
-S_init_active = _flatten_like_model(model, S_init_dict, only_active=masks)
+S_init_active = _flatten_like_model(model, S_init_dict)
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
-initial_param_mag_active = _flatten_param_magnitudes(model, masks)
+initial_param_mag_active = _flatten_param_magnitudes(model)
 eig_init = probe_covariance_eigvals(init_probe_matrix)
 
 print("\nTraining")
@@ -1398,9 +1395,9 @@ for epoch in range(1, cfg.epochs + 1):
         test_metrics = evaluate(model, test_loader, criterion, device)
         S_curr, probe_matrix = compute_sensitivity_scores(
             model, sens_loader, cfg, device, probes=cfg.analysis_probes,
-            collect_probe_matrix=(epoch == cfg.epochs), masks=masks,
+            collect_probe_matrix=(epoch == cfg.epochs),
         )
-        S_curr_active = _flatten_like_model(model, S_curr, only_active=masks)
+        S_curr_active = _flatten_like_model(model, S_curr)
         rho_init_curr = spearman_corr(S_init_active, S_curr_active)
         init_topk_mass = mass_on_indices(S_curr_active, init_topk_idx)
 
@@ -1442,13 +1439,22 @@ for epoch in range(1, cfg.epochs + 1):
 # Final sensitivity and approximate covariance spectrum.
 S_final_dict, final_probe_matrix = compute_sensitivity_scores(
     model, sens_loader, cfg, device, probes=cfg.analysis_probes,
-    collect_probe_matrix=True, masks=masks,
+    collect_probe_matrix=True,
 )
-S_final_active = _flatten_like_model(model, S_final_dict, only_active=masks)
+S_final_active = _flatten_like_model(model, S_final_dict)
 eig_final = probe_covariance_eigvals(final_probe_matrix)
-final_param_mag_active = _flatten_param_magnitudes(model, masks)
+final_param_mag_active = _flatten_param_magnitudes(model)
 final_metrics = evaluate(model, test_loader, criterion, device)
-module_density = masked_density_by_module(model, masks)
+module_density = {}
+for name, p in model.named_parameters():
+    group = name.split(".")[0]
+    stats = module_density.setdefault(group, {"retained": 0, "total": 0})
+    stats["retained"] += p.numel()
+    stats["total"] += p.numel()
+module_density = {
+    group: {"retained": v["retained"], "total": v["total"], "density": v["retained"] / max(1, v["total"])}
+    for group, v in module_density.items()
+}
 
 
 # -----------------------------------------------------------------------------
@@ -1461,7 +1467,7 @@ summary = {
     "device": str(device),
     "parameter_count": parameter_count(model),
     "trainable_parameter_count": trainable_parameter_count(model),
-    "active_parameter_count": int(sum(int(m.sum().item()) for m in masks.values())),
+    "active_parameter_count": trainable_parameter_count(model),
     "pruning": pruning_stats,
     "module_density": module_density,
     "final_test_loss": final_metrics["loss"],
