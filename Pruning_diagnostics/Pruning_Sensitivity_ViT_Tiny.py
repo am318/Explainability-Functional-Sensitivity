@@ -101,6 +101,7 @@ class Config:
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
     prune_fraction: float = _env_float("PRUNE_FRACTION", 0.90)
     iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 40)
+    gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
 
@@ -146,6 +147,8 @@ class Config:
             raise ValueError("ITERATIVE_PRUNING_ROUNDS must be at least 1.")
         if self.pruning_strategy.lower() not in {"structured", "threshold"}:
             raise ValueError("PRUNING_STRATEGY must be 'structured' or 'threshold'.")
+        if not isinstance(self.gradual_sparsification, bool):
+            raise ValueError("GRADUAL_SPARSIFICATION must be a boolean flag.")
         if self.image_size % self.patch_size != 0:
             raise ValueError("IMAGE_SIZE must be divisible by PATCH_SIZE.")
         self.checkpoint_interval = max(1, self.checkpoint_interval)
@@ -799,6 +802,16 @@ def _keep_count(total: int, prune_fraction: float) -> int:
     return max(1, min(total, int(math.ceil((1.0 - prune_fraction) * total))))
 
 
+def _iterative_prune_fraction(cfg: Config, round_idx: int) -> float:
+    """Return the prune fraction to use on a given iterative round."""
+    target = float(cfg.prune_fraction)
+    if not cfg.gradual_sparsification:
+        return target
+    total_rounds = max(1, int(cfg.iterative_pruning_rounds))
+    # Linearly ramp from a mild first-round prune to the requested final sparsity.
+    return target * float(round_idx + 1) / float(total_rounds)
+
+
 def _normalize_unit_scores(unit_scores: torch.Tensor, cfg: Config) -> torch.Tensor:
     unit_scores = unit_scores.detach().float().cpu().reshape(-1)
     if unit_scores.numel() == 0:
@@ -857,8 +870,10 @@ def _build_structured_selection_masks(
     model: nn.Module,
     scores: Dict[str, torch.Tensor],
     cfg: Config,
+    prune_fraction: Optional[float] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor]]:
     """Budgeted structured selection over embedding channels and MLP hidden units."""
+    effective_prune_fraction = float(cfg.prune_fraction if prune_fraction is None else prune_fraction)
     embed_dim = cfg.embed_dim
     head_dim = max(1, embed_dim // max(1, cfg.num_heads))
     if cfg.preserve_attention_heads and embed_dim % max(1, cfg.num_heads) == 0:
@@ -939,7 +954,7 @@ def _build_structured_selection_masks(
                 hidden_scores[idx].add_(hid.float())
                 raw_unit_counts["hidden"] += 1
 
-    embed_keep = _keep_count(n_embed_groups, cfg.prune_fraction)
+    embed_keep = _keep_count(n_embed_groups, effective_prune_fraction)
     embed_sel = torch.zeros(n_embed_groups, dtype=torch.bool)
     embed_sel[torch.topk(embed_group_scores, k=embed_keep, largest=True, sorted=False).indices] = True
     embed_channel_sel = embed_sel.repeat_interleave(group_size)
@@ -951,7 +966,7 @@ def _build_structured_selection_masks(
 
     hidden_sel: Dict[int, torch.Tensor] = {}
     for idx, hs in hidden_scores.items():
-        keep = _keep_count(hs.numel(), cfg.prune_fraction)
+        keep = _keep_count(hs.numel(), effective_prune_fraction)
         sel = torch.zeros_like(hs, dtype=torch.bool)
         sel[torch.topk(hs, k=keep, largest=True, sorted=False).indices] = True
         hidden_sel[idx] = sel
@@ -1025,7 +1040,7 @@ def _build_structured_selection_masks(
         "pruned_eligible_parameter_count": float(max(0, eligible_total - retained_total)),
         "actual_prune_fraction_eligible": float(max(0, eligible_total - retained_total) / max(1, eligible_total)),
         "pruning_strategy": cfg.pruning_strategy.lower(),
-        "prune_fraction": float(cfg.prune_fraction),
+        "prune_fraction": float(effective_prune_fraction),
         "iterative_pruning_rounds": int(cfg.iterative_pruning_rounds),
         "layerwise_normalize_scores": bool(cfg.layerwise_normalize_scores),
         "preserve_attention_heads": bool(cfg.preserve_attention_heads),
@@ -1051,6 +1066,7 @@ def build_structured_masks_iterative(
     final_hidden_sel: Dict[int, torch.Tensor] = {}
     final_scores: Dict[str, torch.Tensor] = {}
 
+    round_fractions: List[float] = []
     for round_idx in range(cfg.iterative_pruning_rounds):
         scores, _ = compute_sensitivity_scores(
             model,
@@ -1060,7 +1076,14 @@ def build_structured_masks_iterative(
             probes=cfg.sensitivity_probes,
         )
         final_scores = scores
-        masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(model, scores, cfg)
+        round_prune_fraction = _iterative_prune_fraction(cfg, round_idx)
+        round_fractions.append(round_prune_fraction)
+        masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
+            model,
+            scores,
+            cfg,
+            prune_fraction=round_prune_fraction,
+        )
         final_masks = masks
         final_stats = stats
         final_embed_sel = embed_sel
@@ -1068,6 +1091,9 @@ def build_structured_masks_iterative(
         apply_masks_(model, masks)
 
     final_stats["iterative_rounds_completed"] = float(cfg.iterative_pruning_rounds)
+    final_stats["gradual_sparsification"] = bool(cfg.gradual_sparsification)
+    final_stats["round_prune_fraction_schedule"] = [float(x) for x in round_fractions]
+    final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(cfg.prune_fraction)
     return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
 
 
