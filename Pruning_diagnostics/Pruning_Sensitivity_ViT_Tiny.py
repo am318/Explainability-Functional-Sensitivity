@@ -75,7 +75,7 @@ class Config:
     seed: int = _env_int("SEED", 0)
     dataset: str = _env_str("DATASET", "CIFAR10")
     data_dir: str = _env_str("DATA_DIR", "./data")
-    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_sensitivity_pruning")
+    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_sensitivity_pruning_improved")
     download: bool = _env_bool("DOWNLOAD", True)
 
     image_size: int = _env_int("IMAGE_SIZE", 32)
@@ -103,6 +103,10 @@ class Config:
     iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 20)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
+    sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "mad")  # mad, zscore, rank, none
+    sensitivity_clip_quantile: float = _env_float("SENSITIVITY_CLIP_QUANTILE", 0.05)
+    min_embed_keep_fraction: float = _env_float("MIN_EMBED_KEEP_FRACTION", 0.10)
+    min_hidden_keep_fraction: float = _env_float("MIN_HIDDEN_KEEP_FRACTION", 0.05)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
 
     batch_size: int = _env_int("BATCH_SIZE", 256)
@@ -149,6 +153,14 @@ class Config:
             raise ValueError("PRUNING_STRATEGY must be 'structured' or 'threshold'.")
         if not isinstance(self.gradual_sparsification, bool):
             raise ValueError("GRADUAL_SPARSIFICATION must be a boolean flag.")
+        if self.sensitivity_normalization.lower() not in {"mad", "zscore", "rank", "none"}:
+            raise ValueError("SENSITIVITY_NORMALIZATION must be one of: mad, zscore, rank, none.")
+        if not (0.0 <= self.sensitivity_clip_quantile < 0.5):
+            raise ValueError("SENSITIVITY_CLIP_QUANTILE must be in [0, 0.5).")
+        if not (0.0 <= self.min_embed_keep_fraction <= 1.0):
+            raise ValueError("MIN_EMBED_KEEP_FRACTION must be in [0, 1].")
+        if not (0.0 <= self.min_hidden_keep_fraction <= 1.0):
+            raise ValueError("MIN_HIDDEN_KEEP_FRACTION must be in [0, 1].")
         if self.image_size % self.patch_size != 0:
             raise ValueError("IMAGE_SIZE must be divisible by PATCH_SIZE.")
         self.checkpoint_interval = max(1, self.checkpoint_interval)
@@ -744,6 +756,16 @@ def make_threshold_connectivity_masks(
         if is_prunable_parameter(name, p, cfg):
             eligible_total += p.numel()
             mask = score >= float(cfg.prune_threshold)
+            floor_keep = 1
+            if p.ndim == 4 and "patch_embed" in name:
+                floor_keep = _min_keep_count(p.numel(), cfg.min_embed_keep_fraction)
+            elif p.ndim == 2 and ("mlp.fc1" in name or "mlp.fc2" in name or "attn" in name):
+                floor_keep = _min_keep_count(p.numel(), cfg.min_hidden_keep_fraction)
+            if int(mask.sum().item()) < floor_keep:
+                top_idx = torch.topk(score.reshape(-1), k=floor_keep, largest=True, sorted=False).indices
+                mask = torch.zeros_like(score, dtype=torch.bool).reshape(-1)
+                mask[top_idx] = True
+                mask = mask.view_as(score)
             if cfg.connectivity_closure and p.ndim in (2, 4):
                 restored_total += _connectivity_close_dense_weight(mask, score, max(1, cfg.min_connections_per_unit))
             # Never allow a prunable tensor to become completely empty.
@@ -802,6 +824,10 @@ def _keep_count(total: int, prune_fraction: float) -> int:
     return max(1, min(total, int(math.ceil((1.0 - prune_fraction) * total))))
 
 
+def _min_keep_count(total: int, min_keep_fraction: float) -> int:
+    return max(1, min(total, int(math.ceil(float(min_keep_fraction) * total))))
+
+
 def _iterative_prune_fraction(cfg: Config, round_idx: int) -> float:
     """Return the prune fraction to use on a given iterative round."""
     target = float(cfg.prune_fraction)
@@ -813,14 +839,48 @@ def _iterative_prune_fraction(cfg: Config, round_idx: int) -> float:
 
 
 def _normalize_unit_scores(unit_scores: torch.Tensor, cfg: Config) -> torch.Tensor:
+    """Normalize scores within a tensor while preserving sensitivity ordering.
+
+    The default mode is robust min-max scaling after quantile clipping. This keeps
+    the metric sensitivity-based, but prevents a single tensor or a single probe
+    from dominating the final ranking.
+    """
     unit_scores = unit_scores.detach().float().cpu().reshape(-1)
     if unit_scores.numel() == 0:
         return unit_scores
     if not cfg.layerwise_normalize_scores:
         return unit_scores
-    mean = unit_scores.mean()
-    scale = unit_scores.std(unbiased=False).clamp_min(1e-12)
-    return (unit_scores - mean) / scale
+
+    mode = cfg.sensitivity_normalization.lower()
+    eps = 1e-12
+
+    if mode == "none":
+        return unit_scores
+    if mode == "rank":
+        if unit_scores.numel() == 1:
+            return torch.ones_like(unit_scores)
+        ranks = torch.argsort(torch.argsort(unit_scores)).float()
+        return ranks / max(1.0, float(unit_scores.numel() - 1))
+
+    if mode == "zscore":
+        center = unit_scores.mean()
+        scale = unit_scores.std(unbiased=False).clamp_min(eps)
+        norm = (unit_scores - center) / scale
+    else:
+        # Robust scaling: clip extremes, then rescale to [0, 1].
+        q = float(cfg.sensitivity_clip_quantile)
+        lo = torch.quantile(unit_scores, q)
+        hi = torch.quantile(unit_scores, 1.0 - q)
+        clipped = unit_scores.clamp(lo, hi)
+        denom = (clipped.max() - clipped.min()).clamp_min(eps)
+        norm = (clipped - clipped.min()) / denom
+        return norm
+
+    # Keep the z-score mode bounded and monotone for downstream aggregation.
+    norm = norm.clamp(min=-6.0, max=6.0)
+    norm = norm - norm.min()
+    denom = (norm.max() - norm.min()).clamp_min(eps)
+    return norm / denom
 
 
 def _tensor_group_scores(name: str, score: torch.Tensor, p: torch.Tensor, cfg: Config) -> Optional[torch.Tensor]:
@@ -954,7 +1014,7 @@ def _build_structured_selection_masks(
                 hidden_scores[idx].add_(hid.float())
                 raw_unit_counts["hidden"] += 1
 
-    embed_keep = _keep_count(n_embed_groups, effective_prune_fraction)
+    embed_keep = max(_keep_count(n_embed_groups, effective_prune_fraction), _min_keep_count(n_embed_groups, cfg.min_embed_keep_fraction))
     embed_sel = torch.zeros(n_embed_groups, dtype=torch.bool)
     embed_sel[torch.topk(embed_group_scores, k=embed_keep, largest=True, sorted=False).indices] = True
     embed_channel_sel = embed_sel.repeat_interleave(group_size)
@@ -966,7 +1026,7 @@ def _build_structured_selection_masks(
 
     hidden_sel: Dict[int, torch.Tensor] = {}
     for idx, hs in hidden_scores.items():
-        keep = _keep_count(hs.numel(), effective_prune_fraction)
+        keep = max(_keep_count(hs.numel(), effective_prune_fraction), _min_keep_count(hs.numel(), cfg.min_hidden_keep_fraction))
         sel = torch.zeros_like(hs, dtype=torch.bool)
         sel[torch.topk(hs, k=keep, largest=True, sorted=False).indices] = True
         hidden_sel[idx] = sel
@@ -1043,6 +1103,10 @@ def _build_structured_selection_masks(
         "prune_fraction": float(effective_prune_fraction),
         "iterative_pruning_rounds": int(cfg.iterative_pruning_rounds),
         "layerwise_normalize_scores": bool(cfg.layerwise_normalize_scores),
+        "sensitivity_normalization": str(cfg.sensitivity_normalization),
+        "sensitivity_clip_quantile": float(cfg.sensitivity_clip_quantile),
+        "min_embed_keep_fraction": float(cfg.min_embed_keep_fraction),
+        "min_hidden_keep_fraction": float(cfg.min_hidden_keep_fraction),
         "preserve_attention_heads": bool(cfg.preserve_attention_heads),
         "connectivity_restored_coordinate_count": float(restored_total),
         "embed_groups": float(n_embed_groups),
@@ -1560,7 +1624,7 @@ summary = {
     "largest_final_probe_cov_eigenvalue": float(eig_final[0].item()) if eig_final is not None and eig_final.numel() else None,
     "probe_cov_effective_rank_final": effective_rank(eig_final) if eig_final is not None else None,
     "history": history,
-    "analysis_note": "Structured pruning uses layerwise-normalized sensitivity, budgeted selection, and iterative refinement by default; set PRUNING_STRATEGY=threshold to revert.",
+    "analysis_note": "Improved structured sensitivity pruning uses robust within-tensor normalization, per-group minimum retention, connectivity closure, and iterative refinement; set PRUNING_STRATEGY=threshold to use a thresholded sensitivity mask.",
 }
 
 summary_path = out_dir / "vit_structured_sensitivity_pruning_summary.json"
