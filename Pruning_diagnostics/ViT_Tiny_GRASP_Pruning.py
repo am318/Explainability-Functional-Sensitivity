@@ -1,16 +1,13 @@
 """
-ViT structured sensitivity-pruning experiment.
+ViT tiny GRASP pruning experiment.
 
-This script performs zero-shot structured sensitivity pruning at initialization,
-then trains the remaining ViT parameters from scratch. It uses unit-level
-score aggregation, layerwise normalization, budgeted selection, and a short
-iterative refinement pass before training.
+This script performs zero-shot GRASP pruning at initialization, then trains the remaining ViT parameters from scratch. It uses a sensitivity-derived pruning budget, global GRASP mask selection, and the same checkpointed sensitivity analysis as the baseline ViT tiny script.
 
 Default target: CIFAR-10 with a compact ViT. Use environment variables to change
 model/data/training settings without editing the file.
 
 Example:
-    EPOCHS=100 PRUNE_FRACTION=0.25 BATCH_SIZE=128 python ViT_Sensitivity_Pruning_Experiment.py
+    EPOCHS=100 BATCH_SIZE=128 python ViT_Tiny_GRASP_Pruning.py
 """
 
 import copy
@@ -45,6 +42,18 @@ except Exception:
     transforms = None
     _TORCHVISION_AVAILABLE = False
 
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path("/Users/alan/Documents/Github/Explainability-Functional-Sensitivity/pruning")))
+
+try:
+    from pruning.pruning_baselines import build_snip_masks, build_grasp_masks
+except Exception:
+    from pruning_baselines import build_snip_masks, build_grasp_masks
+
+PRUNING_METHOD = "grasp"
+
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -75,7 +84,7 @@ class Config:
     seed: int = _env_int("SEED", 0)
     dataset: str = _env_str("DATASET", "CIFAR10")
     data_dir: str = _env_str("DATA_DIR", "./data")
-    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_sensitivity_pruning")
+    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_tiny_grasp")
     download: bool = _env_bool("DOWNLOAD", True)
 
     image_size: int = _env_int("IMAGE_SIZE", 32)
@@ -1186,13 +1195,31 @@ print(f"Dataset: {cfg.dataset.upper()} | train={len(train_set)} | sensitivity={l
 print(f"Model trainable parameters before pruning: {trainable_parameter_count(model):,}")
 print("Computing zero-shot sensitivity scores at initialization")
 
-if cfg.pruning_strategy.lower() == "structured":
-    masks, pruning_stats, embed_sel, hidden_sel, sensitivity_scores = build_structured_masks_iterative(
-        model, sens_loader, cfg, device
-    )
+prune_criterion = nn.CrossEntropyLoss()
+
+sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+sensitivity_masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
+
+prune_stats = dict(pruning_stats)
+target_sparsity = float(prune_stats["actual_prune_fraction_all_trainable"])
+
+prune_images, prune_targets = next(iter(train_loader))
+prune_images = prune_images.to(device, non_blocking=True)
+prune_targets = prune_targets.to(device, non_blocking=True)
+
+if PRUNING_METHOD == "snip":
+    masks = build_snip_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
+elif PRUNING_METHOD == "grasp":
+    masks = build_grasp_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
 else:
-    sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-    masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
+    raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
+
+pruning_stats = {
+    **pruning_stats,
+    "pruning_method": PRUNING_METHOD,
+    "target_sparsity": target_sparsity,
+    "matched_sensitivity_masks": True,
+}
 
 S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
@@ -1200,7 +1227,7 @@ S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks
 init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
 initial_param_mag_active = _flatten_param_magnitudes(model)
 
-print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}")
+print(f"{PRUNING_METHOD.upper()} pruning complete | target_sparsity={100.0 * target_sparsity:.2f}%")
 print(json.dumps(pruning_stats, indent=2))
 print("Training the pruned ViT from scratch")
 
@@ -1539,7 +1566,7 @@ module_density = {
 # Save outputs and sweep-style plots
 # -----------------------------------------------------------------------------
 
-run_tag = f"{cfg.dataset.lower()}_vit_tiny_structured_{parameter_count(model)}_params"
+run_tag = f"{cfg.dataset.lower()}_vit_tiny_grasp_{parameter_count(model)}_params"
 summary = {
     "config": asdict(cfg),
     "device": str(device),
@@ -1560,10 +1587,10 @@ summary = {
     "largest_final_probe_cov_eigenvalue": float(eig_final[0].item()) if eig_final is not None and eig_final.numel() else None,
     "probe_cov_effective_rank_final": effective_rank(eig_final) if eig_final is not None else None,
     "history": history,
-    "analysis_note": "Structured pruning uses layerwise-normalized sensitivity, budgeted selection, and iterative refinement by default; set PRUNING_STRATEGY=threshold to revert.",
+    "analysis_note": "GRASP pruning uses a sensitivity-derived sparsity target and the same checkpointed analysis pipeline as the baseline ViT tiny script.",
 }
 
-summary_path = out_dir / "vit_structured_sensitivity_pruning_summary.json"
+summary_path = out_dir / "vit_tiny_grasp_pruning_summary.json"
 save_json(summary_path, summary)
 
 if plt is not None and history:
