@@ -1,13 +1,13 @@
 """
-ViT tiny GRASP pruning experiment.
+ViT tiny SYNFLOW pruning experiment.
 
-This script performs zero-shot GRASP pruning at initialization, then trains the remaining ViT parameters from scratch. It uses a sensitivity-derived pruning budget, global GRASP mask selection, and the same checkpointed sensitivity analysis as the baseline ViT tiny script.
+This script performs zero-shot SYNFLOW pruning at initialization, then trains the remaining ViT parameters from scratch. It uses a sensitivity-derived pruning budget, global SYNFLOW mask selection, and the same checkpointed sensitivity analysis as the baseline ViT tiny script.
 
 Default target: CIFAR-10 with a compact ViT. Use environment variables to change
 model/data/training settings without editing the file.
 
 Example:
-    EPOCHS=100 BATCH_SIZE=128 python ViT_Tiny_GRASP_Pruning.py
+    EPOCHS=100 BATCH_SIZE=128 python ViT_Tiny_SYNFLOW_Pruning.py
 """
 
 import copy
@@ -48,11 +48,11 @@ import sys
 sys.path.append(str(Path("/Users/alan/Documents/Github/Explainability-Functional-Sensitivity/pruning")))
 
 try:
-    from pruning.pruning_baselines import build_snip_masks, build_grasp_masks
+    from pruning.pruning_baselines import build_snip_masks, build_synflow_masks
 except Exception:
-    from pruning_baselines import build_snip_masks, build_grasp_masks
+    from pruning_baselines import build_snip_masks, build_synflow_masks
 
-PRUNING_METHOD = "grasp"
+PRUNING_METHOD = "synflow"
 
 
 # -----------------------------------------------------------------------------
@@ -84,7 +84,7 @@ class Config:
     seed: int = _env_int("SEED", 0)
     dataset: str = _env_str("DATASET", "CIFAR10")
     data_dir: str = _env_str("DATA_DIR", "./data")
-    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_tiny_grasp")
+    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_tiny_SYNFLOW")
     download: bool = _env_bool("DOWNLOAD", True)
 
     image_size: int = _env_int("IMAGE_SIZE", 32)
@@ -1209,8 +1209,8 @@ prune_targets = prune_targets.to(device, non_blocking=True)
 
 if PRUNING_METHOD == "snip":
     masks = build_snip_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
-elif PRUNING_METHOD == "grasp":
-    masks = build_grasp_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
+elif PRUNING_METHOD == "synflow":
+    masks = build_synflow_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
 else:
     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
 
@@ -1566,7 +1566,7 @@ module_density = {
 # Save outputs and sweep-style plots
 # -----------------------------------------------------------------------------
 
-run_tag = f"{cfg.dataset.lower()}_vit_tiny_grasp_{parameter_count(model)}_params"
+run_tag = f"{cfg.dataset.lower()}_vit_tiny_SYNFLOW_{parameter_count(model)}_params"
 summary = {
     "config": asdict(cfg),
     "device": str(device),
@@ -1587,10 +1587,10 @@ summary = {
     "largest_final_probe_cov_eigenvalue": float(eig_final[0].item()) if eig_final is not None and eig_final.numel() else None,
     "probe_cov_effective_rank_final": effective_rank(eig_final) if eig_final is not None else None,
     "history": history,
-    "analysis_note": "GRASP pruning uses a sensitivity-derived sparsity target and the same checkpointed analysis pipeline as the baseline ViT tiny script.",
+    "analysis_note": "SYNFLOW pruning uses a sensitivity-derived sparsity target and the same checkpointed analysis pipeline as the baseline ViT tiny script.",
 }
 
-summary_path = out_dir / "vit_tiny_grasp_pruning_summary.json"
+summary_path = out_dir / "vit_tiny_SYNFLOW_pruning_summary.json"
 save_json(summary_path, summary)
 
 if plt is not None and history:
