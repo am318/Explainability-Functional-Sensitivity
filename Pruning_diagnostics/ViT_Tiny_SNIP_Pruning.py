@@ -1186,6 +1186,92 @@ def save_json(path: Path, payload) -> None:
         json.dump(payload, f, indent=2)
 
 
+def _enforce_exact_keep_count(
+    model: nn.Module,
+    masks: Dict[str, torch.Tensor],
+    desired_keep: int,
+    allowed_masks: Dict[str, torch.Tensor],
+    score_source: Optional[Dict[str, torch.Tensor]] = None,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    """Adjust a boolean mask so the total retained coordinates match an exact budget.
+
+    The function preserves the allowed set of coordinates and uses a deterministic
+    tie-breaker score to decide which surviving coordinates to drop (or restore)
+    when the initial pruning step misses the exact keep count.
+    """
+    flat_masks: List[torch.Tensor] = []
+    flat_allowed: List[torch.Tensor] = []
+    flat_scores: List[torch.Tensor] = []
+    offsets: List[Tuple[str, int, int, torch.Size]] = []
+
+    offset = 0
+    for name, p in model.named_parameters():
+        mask = masks[name].detach().bool().reshape(-1).cpu()
+        allow = allowed_masks[name].detach().bool().reshape(-1).cpu()
+        if score_source is not None and name in score_source:
+            score = score_source[name].detach().float().reshape(-1).cpu().abs()
+        else:
+            score = p.detach().float().reshape(-1).cpu().abs()
+        if score.numel() != mask.numel():
+            raise RuntimeError(f"Score/Mask shape mismatch for {name}")
+        flat_masks.append(mask)
+        flat_allowed.append(allow)
+        flat_scores.append(score)
+        offsets.append((name, offset, offset + mask.numel(), p.shape))
+        offset += mask.numel()
+
+    if not flat_masks:
+        return masks, {"exact_budget_adjustment": 0.0}
+
+    keep = torch.cat(flat_masks)
+    allowed = torch.cat(flat_allowed)
+    scores = torch.cat(flat_scores)
+
+    # Never permit retention outside the allowed set.
+    keep = keep & allowed
+
+    current_keep = int(keep.sum().item())
+    adjust = int(desired_keep) - current_keep
+    applied = 0
+
+    if adjust < 0:
+        num_to_prune = min(-adjust, current_keep)
+        if num_to_prune > 0:
+            candidate_idx = torch.nonzero(keep, as_tuple=False).flatten()
+            candidate_scores = scores[candidate_idx]
+            prune_local = torch.topk(candidate_scores, k=num_to_prune, largest=False, sorted=False).indices
+            prune_idx = candidate_idx[prune_local]
+            keep[prune_idx] = False
+            applied = -int(num_to_prune)
+    elif adjust > 0:
+        candidate_idx = torch.nonzero(~keep & allowed, as_tuple=False).flatten()
+        if candidate_idx.numel() < adjust:
+            raise RuntimeError(
+                f"Cannot restore {adjust} coordinates without violating the allowed mask budget. "
+                f"Only {candidate_idx.numel()} coordinates remain available."
+            )
+        restore_local = torch.topk(scores[candidate_idx], k=adjust, largest=True, sorted=False).indices
+        restore_idx = candidate_idx[restore_local]
+        keep[restore_idx] = True
+        applied = int(adjust)
+
+    rebuilt: Dict[str, torch.Tensor] = {}
+    cursor = 0
+    for name, p in model.named_parameters():
+        n = p.numel()
+        rebuilt[name] = keep[cursor:cursor + n].view_as(p).to(device=p.device)
+        cursor += n
+
+    stats = {
+        "exact_budget_current_keep": float(current_keep),
+        "exact_budget_desired_keep": float(desired_keep),
+        "exact_budget_adjustment": float(applied),
+        "exact_budget_final_keep": float(int(keep.sum().item())),
+        "exact_budget_final_pruned": float(int((~keep).sum().item())),
+    }
+    return rebuilt, stats
+
+
 # -----------------------------------------------------------------------------
 # Initial pruning
 # -----------------------------------------------------------------------------
@@ -1198,20 +1284,22 @@ print("Computing zero-shot sensitivity scores at initialization")
 prune_criterion = nn.CrossEntropyLoss()
 
 # Derive the exact sparsity budget produced by the sensitivity script so that
-# SNIP prunes the same number of parameters as the sensitivity mask.
+# SNIP/SynFlow can be forced to keep the same number of trainable coordinates as
+# the reference sensitivity mask.
 #
 # The key subtlety: `actual_prune_fraction_eligible` is measured over prunable
 # parameters only, but build_snip_masks / build_synflow_masks apply a sparsity
 # fraction over ALL trainable parameters.  We therefore convert the sensitivity
-# mask's retained-eligible count into a global fraction:
+# mask's retained-eligible count into a global fraction and then enforce the
+# exact retained count as a post-processing step:
 #
 #   target_sparsity = 1 - (ref_retained_eligible / total_trainable)
 #
-# This ensures the baseline methods keep the identical number of weights as the
-# sensitivity mask would, enabling a fair apples-to-apples comparison.
+# This keeps the pruning budget exact even if the baseline mask routine is only
+# approximate.
 _ref_model = copy.deepcopy(model)
 if cfg.pruning_strategy.lower() == "structured":
-    ref_masks, ref_pruning_stats, _, _, _ = build_structured_masks_iterative(
+    ref_masks, ref_pruning_stats, _, _, sensitivity_scores = build_structured_masks_iterative(
         _ref_model, sens_loader, cfg, device
     )
 else:
@@ -1247,7 +1335,7 @@ if PRUNING_METHOD == "snip":
         name: mask & allowed_masks[name]
         for name, mask in masks.items()
     }
-elif PRUNING_METHOD == "snflow":
+elif PRUNING_METHOD == "synflow":
     masks = build_synflow_masks(
         model, prune_images, prune_targets, prune_criterion, target_sparsity
     )
@@ -1258,17 +1346,33 @@ elif PRUNING_METHOD == "snflow":
 else:
     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
 
+# Force the final retained coordinate count to be exact.
+desired_keep_count = int(ref_retained_eligible)
+masks, exact_budget_stats = _enforce_exact_keep_count(
+    model,
+    masks,
+    desired_keep=desired_keep_count,
+    allowed_masks=allowed_masks,
+)
+
+eligible_total = int(ref_pruning_stats["eligible_parameter_count"])
+final_keep = int(exact_budget_stats["exact_budget_final_keep"])
+pruned_eligible = max(0, eligible_total - final_keep)
+pruned_all_trainable = max(0, total_trainable - final_keep)
 pruning_stats = {
     **pruning_stats,
+    **exact_budget_stats,
     "pruning_method": PRUNING_METHOD,
     "target_sparsity": target_sparsity,
     "sensitivity_ref_retained_eligible": ref_retained_eligible,
     "sensitivity_ref_total_trainable": total_trainable,
     "matched_sensitivity_masks": True,
+    "actual_prune_fraction_eligible": float(pruned_eligible / max(1, eligible_total)),
+    "actual_prune_fraction_all_trainable": float(pruned_all_trainable / max(1, total_trainable)),
+    "pruned_eligible_parameter_count": float(pruned_eligible),
+    "pruned_trainable_parameter_count": float(pruned_all_trainable),
+    "retained_eligible_parameter_count": float(final_keep),
 }
-
-sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-
 S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
 S_init_active = _flatten_like_model(model, sensitivity_scores, only_active=masks)
