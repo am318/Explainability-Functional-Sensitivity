@@ -1197,20 +1197,38 @@ print("Computing zero-shot sensitivity scores at initialization")
 
 prune_criterion = nn.CrossEntropyLoss()
 
-# Derive target sparsity using the same structured iterative path as the
-# sensitivity pruning script so all methods are pruned to the same fraction.
+# Derive the exact sparsity budget produced by the sensitivity script so that
+# SNIP prunes the same number of parameters as the sensitivity mask.
+#
+# The key subtlety: `actual_prune_fraction_eligible` is measured over prunable
+# parameters only, but build_snip_masks / build_synflow_masks apply a sparsity
+# fraction over ALL trainable parameters.  We therefore convert the sensitivity
+# mask's retained-eligible count into a global fraction:
+#
+#   target_sparsity = 1 - (ref_retained_eligible / total_trainable)
+#
+# This ensures the baseline methods keep the identical number of weights as the
+# sensitivity mask would, enabling a fair apples-to-apples comparison.
 _ref_model = copy.deepcopy(model)
 if cfg.pruning_strategy.lower() == "structured":
-    _, ref_pruning_stats, _, _, _ = build_structured_masks_iterative(
+    ref_masks, ref_pruning_stats, _, _, _ = build_structured_masks_iterative(
         _ref_model, sens_loader, cfg, device
     )
 else:
     _ref_scores, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-    _, ref_pruning_stats = make_threshold_connectivity_masks(_ref_model, _ref_scores, cfg)
+    ref_masks, ref_pruning_stats = make_threshold_connectivity_masks(_ref_model, _ref_scores, cfg)
 del _ref_model
 
+# Count how many prunable parameters the sensitivity mask retains, then express
+# that as a keep-fraction over all trainable parameters so the baseline methods
+# receive the correct global budget.
+total_trainable = trainable_parameter_count(model)
+ref_retained_eligible = int(ref_pruning_stats["retained_eligible_parameter_count"])
+# target_sparsity: fraction of ALL trainable params that should be zeroed out,
+# i.e. 1 minus the keep-fraction over total trainable params.
+target_sparsity = 1.0 - float(ref_retained_eligible) / max(1, total_trainable)
+
 pruning_stats = ref_pruning_stats
-target_sparsity = float(ref_pruning_stats["actual_prune_fraction_eligible"])
 
 allowed_masks = {
     name: torch.ones_like(p, dtype=torch.bool) if is_prunable_parameter(name, p, cfg) else torch.zeros_like(p, dtype=torch.bool)
@@ -1244,6 +1262,8 @@ pruning_stats = {
     **pruning_stats,
     "pruning_method": PRUNING_METHOD,
     "target_sparsity": target_sparsity,
+    "sensitivity_ref_retained_eligible": ref_retained_eligible,
+    "sensitivity_ref_total_trainable": total_trainable,
     "matched_sensitivity_masks": True,
 }
 
