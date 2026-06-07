@@ -314,6 +314,12 @@ criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
 # Rebuild a compact model and train that model directly.
 model = build_sparse_model_from_masks(model, masks, cfg, device)
 
+total_params = parameter_count(_ref_model)
+active_params = trainable_parameter_count(model)
+model_pruned_pct = 100.0 * (total_params - active_params) / max(1, total_params)
+print(f"Model pruning after sparsification: {model_pruned_pct:.2f}% pruned")
+pruning_stats["Percentage_Pruned"] = model_pruned_pct
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
 
