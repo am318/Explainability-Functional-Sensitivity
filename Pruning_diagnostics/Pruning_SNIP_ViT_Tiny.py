@@ -274,28 +274,24 @@ else:
     sensitivity_scores, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
     masks, pruning_stats = make_threshold_connectivity_masks(_ref_model, sensitivity_scores, cfg)
 
+# Apply baseline pruning method
+
+prune_images, prune_targets = next(iter(train_loader))
+
 if PRUNING_METHOD == "snip":
     masks = build_snip_masks(
-        model, prune_images, prune_targets, prune_criterion, target_sparsity
+        model, prune_images, prune_targets, nn.CrossEntropyLoss(), float(pruning_stats['actual_prune_fraction_eligible'])
     )
-    masks = {
-        name: mask & allowed_masks[name]
-        for name, mask in masks.items()
-    }
+   
 elif PRUNING_METHOD == "synflow":
     masks = build_synflow_masks(
-        model, prune_images, prune_targets, prune_criterion, target_sparsity
+        model, prune_images, prune_targets, nn.CrossEntropyLoss(), float(pruning_stats['actual_prune_fraction_eligible'])
     )
-    masks = {
-        name: mask & allowed_masks[name]
-        for name, mask in masks.items()
-    }
+   
 else:
     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
 
-
-
-
+# Apply pruning mask
 
 S_init_flat_all = flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
