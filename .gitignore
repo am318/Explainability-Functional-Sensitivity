@@ -1,6 +1,7 @@
 venv
-__pycache__
+Pruning_diagnostics/__pycache__
 *.pdf
 *.json
 logs
 Plots
+Pruning_diagnostics/data
