@@ -38,6 +38,8 @@ from build_sparse_model import *
 
 from training_tools import *
 
+from pruning_baselines import *
+
 try:
     import matplotlib
     matplotlib.use("Agg")
@@ -58,6 +60,7 @@ except Exception:
 # Configuration
 # -----------------------------------------------------------------------------
 
+PRUNING_METHOD = 'snip'
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
@@ -261,13 +264,38 @@ print(f"Dataset: {cfg.dataset.upper()} | train={len(train_set)} | sensitivity={l
 print(f"Model trainable parameters before pruning: {trainable_parameter_count(model):,}")
 print("Computing zero-shot sensitivity scores at initialization")
 
+_ref_model = copy.deepcopy(model)
+
 if cfg.pruning_strategy.lower() == "structured":
     masks, pruning_stats, embed_sel, hidden_sel, sensitivity_scores = build_structured_masks_iterative(
-        model, sens_loader, cfg, device
+        _ref_model, sens_loader, cfg, device
     )
 else:
-    sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-    masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
+    sensitivity_scores, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+    masks, pruning_stats = make_threshold_connectivity_masks(_ref_model, sensitivity_scores, cfg)
+
+if PRUNING_METHOD == "snip":
+    masks = build_snip_masks(
+        model, prune_images, prune_targets, prune_criterion, target_sparsity
+    )
+    masks = {
+        name: mask & allowed_masks[name]
+        for name, mask in masks.items()
+    }
+elif PRUNING_METHOD == "synflow":
+    masks = build_synflow_masks(
+        model, prune_images, prune_targets, prune_criterion, target_sparsity
+    )
+    masks = {
+        name: mask & allowed_masks[name]
+        for name, mask in masks.items()
+    }
+else:
+    raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
+
+
+
+
 
 S_init_flat_all = flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)

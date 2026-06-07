@@ -1,0 +1,424 @@
+import math
+import torch 
+from typing import Dict, Iterable, List, Optional, Tuple
+from pathlib import Path
+import torch.nn as nn
+import re
+from sensitivity_metrics import *
+import json
+
+
+def _keep_count(total: int, prune_fraction: float) -> int:
+    return max(1, min(total, int(math.ceil((1.0 - prune_fraction) * total))))
+
+def _iterative_prune_fraction(cfg, round_idx: int) -> float:
+    """Return the prune fraction to use on a given iterative round."""
+    target = float(cfg.prune_fraction)
+    if not cfg.gradual_sparsification:
+        return target
+    total_rounds = max(1, int(cfg.iterative_pruning_rounds))
+    # Linearly ramp from a mild first-round prune to the requested final sparsity.
+    return target * float(round_idx + 1) / float(total_rounds)
+
+
+def _normalize_unit_scores(unit_scores: torch.Tensor, cfg) -> torch.Tensor:
+    """Normalize scores within a tensor while preserving sensitivity ordering.
+
+    The default mode is robust min-max scaling after quantile clipping. This keeps
+    the metric sensitivity-based, but prevents a single tensor or a single probe
+    from dominating the final ranking.
+    """
+    unit_scores = unit_scores.detach().float().cpu().reshape(-1)
+    if unit_scores.numel() == 0:
+        return unit_scores
+    if not cfg.layerwise_normalize_scores:
+        return unit_scores
+
+    mode = cfg.sensitivity_normalization.lower()
+    eps = 1e-12
+
+    if mode == "none":
+        return unit_scores
+    if mode == "rank":
+        if unit_scores.numel() == 1:
+            return torch.ones_like(unit_scores)
+        ranks = torch.argsort(torch.argsort(unit_scores)).float()
+        return ranks / max(1.0, float(unit_scores.numel() - 1))
+
+    if mode == "zscore":
+        center = unit_scores.mean()
+        scale = unit_scores.std(unbiased=False).clamp_min(eps)
+        norm = (unit_scores - center) / scale
+    else:
+        # Robust scaling: clip extremes, then rescale to [0, 1].
+        q = float(cfg.sensitivity_clip_quantile)
+        lo = torch.quantile(unit_scores, q)
+        hi = torch.quantile(unit_scores, 1.0 - q)
+        clipped = unit_scores.clamp(lo, hi)
+        denom = (clipped.max() - clipped.min()).clamp_min(eps)
+        norm = (clipped - clipped.min()) / denom
+        return norm
+
+    # Keep the z-score mode bounded and monotone for downstream aggregation.
+    norm = norm.clamp(min=-6.0, max=6.0)
+    norm = norm - norm.min()
+    denom = (norm.max() - norm.min()).clamp_min(eps)
+    return norm / denom
+
+
+def _tensor_group_scores(name: str, score: torch.Tensor, p: torch.Tensor, cfg) -> Optional[torch.Tensor]:
+    score = score.detach().float().cpu()
+    if score.numel() == 0:
+        return None
+
+    # Embedding/channel-level tensors.
+    if name in {"cls_token", "pos_embed"}:
+        return score.abs().mean(dim=tuple(range(score.ndim - 1)))
+    if "patch_embed.proj.weight" in name and p.ndim == 4:
+        return score.abs().mean(dim=(1, 2, 3))
+    if "patch_embed.proj.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "norm" in name.lower() and p.ndim == 1:
+        return score.abs()
+    if "attn.in_proj_weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=1)
+    if "attn.in_proj_bias" in name and p.ndim == 1:
+        return score.abs()
+    if "attn.out_proj.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=0 if cfg.preserve_attention_heads else 1)
+    if "attn.out_proj.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "mlp.fc2.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=0)
+    if "mlp.fc2.bias" in name and p.ndim == 1:
+        return score.abs()
+    if "head.weight" in name and p.ndim == 2:
+        # Select classifier input channels, not class rows.
+        return score.abs().mean(dim=0)
+    if "head.bias" in name and p.ndim == 1:
+        return score.abs()
+    return None
+
+
+def _hidden_unit_scores(name: str, score: torch.Tensor, p: torch.Tensor) -> Optional[torch.Tensor]:
+    score = score.detach().float().cpu()
+    if "mlp.fc1.weight" in name and p.ndim == 2:
+        return score.abs().mean(dim=1)
+    if "mlp.fc1.bias" in name and p.ndim == 1:
+        return score.abs()
+    return None
+
+
+def _build_structured_selection_masks(
+    model: nn.Module,
+    scores: Dict[str, torch.Tensor],
+    cfg,
+    prune_fraction: Optional[float] = None,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor]]:
+    """Budgeted structured selection over embedding channels and MLP hidden units."""
+    effective_prune_fraction = float(cfg.prune_fraction if prune_fraction is None else prune_fraction)
+    embed_dim = cfg.embed_dim
+    head_dim = max(1, embed_dim // max(1, cfg.num_heads))
+    if cfg.preserve_attention_heads and embed_dim % max(1, cfg.num_heads) == 0:
+        group_size = head_dim
+        n_embed_groups = cfg.num_heads
+    else:
+        group_size = 1
+        n_embed_groups = embed_dim
+
+    embed_group_scores = torch.zeros(n_embed_groups, dtype=torch.float32)
+    hidden_scores: Dict[int, torch.Tensor] = {}
+    raw_unit_counts = {"embed": 0, "hidden": 0}
+
+    for name, p in model.named_parameters():
+        if name not in scores:
+            continue
+        s = scores[name]
+        emb = _tensor_group_scores(name, s, p, cfg)
+        if emb is not None:
+            emb = _normalize_unit_scores(emb, cfg)
+            if "patch_embed.proj.weight" in name and p.ndim == 4:
+                if emb.numel() == embed_dim:
+                    emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif ("cls_token" in name or "pos_embed" in name) and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "attn.in_proj_weight" in name and emb.numel() == 3 * embed_dim:
+                emb = emb[: 3 * n_embed_groups * group_size].reshape(3, n_embed_groups, group_size).mean(dim=(0, 2))
+            elif "attn.in_proj_bias" in name and emb.numel() == 3 * embed_dim:
+                emb = emb[: 3 * n_embed_groups * group_size].reshape(3, n_embed_groups, group_size).mean(dim=(0, 2))
+            elif "attn.out_proj.weight" in name and p.ndim == 2:
+                if emb.numel() == embed_dim:
+                    emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "attn.out_proj.bias" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "mlp.fc2.weight" in name and p.ndim == 2 and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "mlp.fc2.bias" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "head.weight" in name and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+            elif "head.bias" in name and emb.numel() == cfg.num_classes:
+                # Class logits are not pruned; ignore.
+                emb = None
+            elif "norm" in name.lower() and emb.numel() == embed_dim:
+                emb = emb[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+
+            if emb is not None and emb.numel() == n_embed_groups:
+                embed_group_scores.add_(emb.float())
+                raw_unit_counts["embed"] += 1
+
+        # Extra embed-channel contributions from MLP projections.
+        if "mlp.fc1.weight" in name and p.ndim == 2:
+            embed_contrib = _normalize_unit_scores(s.abs().mean(dim=0), cfg)
+            if embed_contrib.numel() == embed_dim:
+                if embed_contrib.numel() == n_embed_groups * group_size:
+                    embed_contrib = embed_contrib.reshape(n_embed_groups, group_size).mean(dim=1)
+                elif embed_contrib.numel() != n_embed_groups:
+                    embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+                embed_group_scores.add_(embed_contrib.float())
+                raw_unit_counts["embed"] += 1
+        if "mlp.fc2.weight" in name and p.ndim == 2:
+            embed_contrib = _normalize_unit_scores(s.abs().mean(dim=1), cfg)
+            if embed_contrib.numel() == embed_dim:
+                if embed_contrib.numel() == n_embed_groups * group_size:
+                    embed_contrib = embed_contrib.reshape(n_embed_groups, group_size).mean(dim=1)
+                elif embed_contrib.numel() != n_embed_groups:
+                    embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
+                embed_group_scores.add_(embed_contrib.float())
+                raw_unit_counts["embed"] += 1
+
+        hid = _hidden_unit_scores(name, s, p)
+        if hid is not None:
+            hid = _normalize_unit_scores(hid, cfg)
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            if block_match:
+                idx = int(block_match.group(1))
+                hidden_scores.setdefault(idx, torch.zeros_like(hid))
+                hidden_scores[idx].add_(hid.float())
+                raw_unit_counts["hidden"] += 1
+
+    embed_keep = max(_keep_count(n_embed_groups, effective_prune_fraction), min_keep_count(n_embed_groups, cfg.min_embed_keep_fraction))
+    embed_sel = torch.zeros(n_embed_groups, dtype=torch.bool)
+    embed_sel[torch.topk(embed_group_scores, k=embed_keep, largest=True, sorted=False).indices] = True
+    embed_channel_sel = embed_sel.repeat_interleave(group_size)
+    if embed_channel_sel.numel() < embed_dim:
+        pad = torch.zeros(embed_dim - embed_channel_sel.numel(), dtype=torch.bool)
+        embed_channel_sel = torch.cat([embed_channel_sel, pad], dim=0)
+    elif embed_channel_sel.numel() > embed_dim:
+        embed_channel_sel = embed_channel_sel[:embed_dim]
+
+    hidden_sel: Dict[int, torch.Tensor] = {}
+    for idx, hs in hidden_scores.items():
+        keep = max(_keep_count(hs.numel(), effective_prune_fraction), min_keep_count(hs.numel(), cfg.min_hidden_keep_fraction))
+        sel = torch.zeros_like(hs, dtype=torch.bool)
+        sel[torch.topk(hs, k=keep, largest=True, sorted=False).indices] = True
+        hidden_sel[idx] = sel
+
+    masks: Dict[str, torch.Tensor] = {}
+    restored_total = 0
+    eligible_total = 0
+    retained_total = 0
+
+    for name, p in model.named_parameters():
+        if not is_prunable_parameter(name, p, cfg):
+            masks[name] = torch.ones_like(p, dtype=torch.bool)
+            continue
+        eligible_total += p.numel()
+        if name in {"cls_token", "pos_embed"}:
+            mask = embed_channel_sel.view(1, 1, -1).expand_as(p).clone()
+        elif "patch_embed.proj.weight" in name and p.ndim == 4:
+            mask = embed_channel_sel.view(-1, 1, 1, 1).expand_as(p).clone()
+        elif "patch_embed.proj.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "attn.in_proj_weight" in name and p.ndim == 2:
+            row_sel = embed_channel_sel.repeat(3)
+            if row_sel.numel() != p.shape[0]:
+                row_sel = row_sel[:p.shape[0]] if row_sel.numel() > p.shape[0] else torch.cat([row_sel, torch.zeros(p.shape[0] - row_sel.numel(), dtype=torch.bool)], dim=0)
+            col_sel = embed_channel_sel
+            mask = row_sel.view(-1, 1).expand_as(p).clone() & col_sel.view(1, -1).expand_as(p)
+        elif "attn.in_proj_bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.repeat(3).clone()
+        elif "attn.out_proj.weight" in name and p.ndim == 2:
+            mask = embed_channel_sel.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+        elif "attn.out_proj.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "mlp.fc2.weight" in name and p.ndim == 2:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc2", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[1], dtype=torch.bool))
+            mask = embed_channel_sel.view(-1, 1).expand(p.shape[0], p.shape[1]) & hmask.view(1, -1)
+        elif "mlp.fc2.bias" in name and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "mlp.fc1.weight" in name and p.ndim == 2:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            hmask = hidden_sel.get(block_idx, torch.ones(p.shape[0], dtype=torch.bool))
+            mask = hmask.view(-1, 1).expand_as(p).clone() & embed_channel_sel.view(1, -1).expand_as(p)
+        elif "mlp.fc1.bias" in name and p.ndim == 1:
+            block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
+            block_idx = int(block_match.group(1)) if block_match else -1
+            mask = hidden_sel.get(block_idx, torch.ones_like(p, dtype=torch.bool)).clone()
+        elif "norm" in name.lower() and p.ndim == 1:
+            mask = embed_channel_sel.clone()
+        elif "head.weight" in name and p.ndim == 2:
+            mask = embed_channel_sel.view(1, -1).expand_as(p).clone()
+        elif "head.bias" in name and p.ndim == 1:
+            mask = torch.ones_like(p, dtype=torch.bool)
+        else:
+            mask = torch.ones_like(p, dtype=torch.bool)
+
+        if cfg.connectivity_closure and p.ndim in (2, 4):
+            # Keep at least one coordinate per row/column group after structured masking.
+            restored_total += connectivity_close_dense_weight(mask, scores[name].to(mask.device), max(1, cfg.min_connections_per_unit))
+        if int(mask.sum().item()) == 0:
+            idx = torch.argmax(scores[name].reshape(-1))
+            mask.reshape(-1)[idx] = True
+            restored_total += 1
+        retained_total += int(mask.sum().item())
+        masks[name] = mask
+
+    stats = {
+        "eligible_parameter_count": float(eligible_total),
+        "retained_eligible_parameter_count": float(retained_total),
+        "pruned_eligible_parameter_count": float(max(0, eligible_total - retained_total)),
+        "actual_prune_fraction_eligible": float(max(0, eligible_total - retained_total) / max(1, eligible_total)),
+        "pruning_strategy": cfg.pruning_strategy.lower(),
+        "prune_fraction": float(effective_prune_fraction),
+        "iterative_pruning_rounds": int(cfg.iterative_pruning_rounds),
+        "layerwise_normalize_scores": bool(cfg.layerwise_normalize_scores),
+        "sensitivity_normalization": str(cfg.sensitivity_normalization),
+        "sensitivity_clip_quantile": float(cfg.sensitivity_clip_quantile),
+        "min_embed_keep_fraction": float(cfg.min_embed_keep_fraction),
+        "min_hidden_keep_fraction": float(cfg.min_hidden_keep_fraction),
+        "preserve_attention_heads": bool(cfg.preserve_attention_heads),
+        "connectivity_restored_coordinate_count": float(restored_total),
+        "embed_groups": float(n_embed_groups),
+        "embed_groups_retained": float(int(embed_sel.sum().item())),
+        "embed_group_keep_fraction": float(int(embed_sel.sum().item()) / max(1, n_embed_groups)),
+        "hidden_block_count": float(len(hidden_scores)),
+    }
+    return masks, stats, embed_sel, hidden_sel
+
+
+def _intersect_and_keep_one(
+    candidate: torch.Tensor,
+    previous: torch.Tensor,
+    score: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Cumulative pruning step:
+    - keep only coordinates that survived previous rounds
+    - if that would empty the tensor, keep the best surviving coordinate
+    """
+    candidate = candidate & previous
+    if int(candidate.sum().item()) > 0:
+        return candidate
+
+    prev_flat = previous.reshape(-1).bool()
+    out = torch.zeros_like(candidate, dtype=torch.bool)
+
+    if int(prev_flat.sum().item()) > 0:
+        score_flat = score.reshape(-1).detach().float().clone()
+        score_flat = score_flat.masked_fill(~prev_flat, float("-inf"))
+        idx = torch.argmax(score_flat)
+        out.reshape(-1)[idx] = True
+    else:
+        # Fallback safety: should not normally happen, but keeps the tensor non-empty.
+        idx = torch.argmax(score.reshape(-1))
+        out.reshape(-1)[idx] = True
+
+    return out
+
+
+def build_structured_masks_iterative(
+    model: nn.Module,
+    loader,
+    cfg,
+    device: torch.device,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor], Dict[str, torch.Tensor]]:
+    """Iteratively recompute sensitivities and refine a structured mask."""
+    params = dict(model.named_parameters())
+    active_masks: Dict[str, torch.Tensor] = {
+        name: torch.ones_like(p, dtype=torch.bool, device=p.device)
+        for name, p in params.items()
+    }
+
+    final_masks: Dict[str, torch.Tensor] = active_masks
+    final_stats: Dict[str, float] = {}
+    final_embed_sel = torch.empty(0, dtype=torch.bool)
+    final_hidden_sel: Dict[int, torch.Tensor] = {}
+    final_scores: Dict[str, torch.Tensor] = {}
+
+    round_fractions: List[float] = []
+    for round_idx in range(cfg.iterative_pruning_rounds):
+        scores, _ = compute_sensitivity_scores(
+            model,
+            loader,
+            cfg,
+            device,
+            probes=cfg.sensitivity_probes,
+        )
+        final_scores = scores
+
+        round_prune_fraction = _iterative_prune_fraction(cfg, round_idx)
+        round_fractions.append(round_prune_fraction)
+
+        candidate_masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
+            model,
+            scores,
+            cfg,
+            prune_fraction=round_prune_fraction,
+        )
+
+        # Make pruning cumulative without changing the round schedule.
+        for name, cand in candidate_masks.items():
+            if is_prunable_parameter(name, params[name], cfg):
+                candidate_masks[name] = _intersect_and_keep_one(
+                    cand.to(device=params[name].device, dtype=torch.bool),
+                    active_masks[name],
+                    scores[name].to(device=params[name].device),
+                )
+            else:
+                candidate_masks[name] = cand.to(device=params[name].device, dtype=torch.bool)
+
+        final_masks = candidate_masks
+        final_stats = stats
+        final_embed_sel = embed_sel
+        final_hidden_sel = hidden_sel
+        active_masks = candidate_masks
+        apply_masks_(model, candidate_masks)
+
+    final_stats["iterative_rounds_completed"] = float(cfg.iterative_pruning_rounds)
+    final_stats["gradual_sparsification"] = bool(cfg.gradual_sparsification)
+    final_stats["round_prune_fraction_schedule"] = [float(x) for x in round_fractions]
+    final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(cfg.prune_fraction)
+    final_stats["cumulative_iterative_pruning"] = True
+    return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
+
+
+def masked_density_by_module(model: nn.Module, masks: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, int | float]]:
+    groups: Dict[str, Dict[str, int]] = {}
+    for name, mask in masks.items():
+        group = name.split(".")[0]
+        groups.setdefault(group, {"retained": 0, "total": 0})
+        groups[group]["retained"] += int(mask.sum().item())
+        groups[group]["total"] += int(mask.numel())
+    return {
+        k: {"retained": v["retained"], "total": v["total"], "density": v["retained"] / max(1, v["total"])}
+        for k, v in groups.items()
+    }
+
+
+def probe_covariance_eigvals(probe_matrix: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    if probe_matrix is None or probe_matrix.numel() == 0:
+        return None
+    X = probe_matrix.float()
+    X = X - X.mean(dim=0, keepdim=True)
+    gram = (X @ X.T) / max(1, X.shape[0])
+    vals = torch.linalg.eigvalsh(gram).flip(0).clamp_min(0).detach().cpu()
+    return vals
+
+
+def save_json(path: Path, payload) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
