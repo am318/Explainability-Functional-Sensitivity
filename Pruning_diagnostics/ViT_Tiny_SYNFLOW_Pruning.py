@@ -1224,23 +1224,20 @@ prune_targets = prune_targets.to(device, non_blocking=True)
 
 if PRUNING_METHOD == "snip":
     masks = build_snip_masks(
-        model,
-        prune_images,
-        prune_targets,
-        prune_criterion,
-        target_sparsity,
-        allowed_masks=allowed_masks,
+        model, prune_images, prune_targets, prune_criterion, target_sparsity
     )
+    masks = {
+        name: mask & allowed_masks[name]
+        for name, mask in masks.items()
+    }
 elif PRUNING_METHOD == "synflow":
     masks = build_synflow_masks(
-        model,
-        prune_images,
-        prune_targets,
-        prune_criterion,
-        target_sparsity,
-        allowed_masks=allowed_masks,
-        iterations=cfg.synflow_iterations,
+        model, prune_images, prune_targets, prune_criterion, target_sparsity
     )
+    masks = {
+        name: mask & allowed_masks[name]
+        for name, mask in masks.items()
+    }
 else:
     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
 
@@ -1250,6 +1247,8 @@ pruning_stats = {
     "target_sparsity": target_sparsity,
     "matched_sensitivity_masks": True,
 }
+
+sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
 
 S_init_flat_all = _flatten_like_model(model, sensitivity_scores)
 apply_masks_(model, masks)
