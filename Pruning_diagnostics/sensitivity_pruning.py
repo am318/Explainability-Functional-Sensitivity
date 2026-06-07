@@ -424,6 +424,7 @@ def save_json(path: Path, payload) -> None:
         json.dump(payload, f, indent=2)
 
 def compute_eligible_pruning_stats(
+    reference_model: nn.Module,
     model: nn.Module,
     masks: Dict[str, torch.Tensor],
     cfg,
@@ -432,7 +433,8 @@ def compute_eligible_pruning_stats(
     Compute pruning stats over eligible parameters.
 
     Args:
-        model: PyTorch module.
+        reference_model: Unpruned reference PyTorch module.
+        model: Pruned PyTorch module.
         masks: Dict mapping parameter name -> boolean mask tensor.
                True means retained, False means pruned.
         cfg: Config object used by is_prunable_parameter(...).
@@ -447,18 +449,24 @@ def compute_eligible_pruning_stats(
     eligible_total = 0
     retained_total = 0
 
-    for name, p in model.named_parameters():
-        if not is_prunable_parameter(name, p, cfg):
+    ref_params = dict(reference_model.named_parameters())
+    pruned_params = dict(model.named_parameters())
+
+    for name, ref_p in ref_params.items():
+        if not is_prunable_parameter(name, ref_p, cfg):
             continue
 
-        eligible_total += p.numel()
+        eligible_total += ref_p.numel()
 
+        pruned_p = pruned_params.get(name)
         mask = masks.get(name)
-        if mask is None:
-            # If no mask is provided, treat all eligible weights as retained.
-            retained_total += p.numel()
-        else:
+
+        if pruned_p is not None:
+            retained_total += pruned_p.numel()
+        elif mask is not None:
             retained_total += int(mask.sum().item())
+        else:
+            retained_total += ref_p.numel()
 
     pruned_total = max(0, eligible_total - retained_total)
 

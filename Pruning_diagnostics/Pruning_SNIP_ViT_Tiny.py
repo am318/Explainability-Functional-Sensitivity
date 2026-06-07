@@ -252,7 +252,6 @@ model = VisionTransformer(
     mlp_ratio=cfg.mlp_ratio,
     dropout=cfg.dropout,
 ).to(device)
-initial_state = copy.deepcopy(model.state_dict())
 
 
 # -----------------------------------------------------------------------------
@@ -309,11 +308,10 @@ print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}"
 
 criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
 
-
 # Rebuild a compact model and train that model directly.
 model = build_sparse_model_from_masks(model, masks, cfg, device)
 
-pruning_stats.update(compute_eligible_pruning_stats( model, masks, cfg))
+pruning_stats.update(compute_eligible_pruning_stats(_ref_model, model, masks, cfg))
 
 print(json.dumps(pruning_stats, indent=2))
 print("Training the pruned ViT from scratch")

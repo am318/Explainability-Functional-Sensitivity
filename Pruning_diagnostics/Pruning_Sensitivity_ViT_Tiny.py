@@ -249,7 +249,6 @@ model = VisionTransformer(
     mlp_ratio=cfg.mlp_ratio,
     dropout=cfg.dropout,
 ).to(device)
-initial_state = copy.deepcopy(model.state_dict())
 
 
 # -----------------------------------------------------------------------------
