@@ -113,6 +113,7 @@ class Config:
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
+    synflow_iterations: int = _env_int("SYNFLOW_ITERATIONS", 5)
 
     batch_size: int = _env_int("BATCH_SIZE", 256)
     epochs: int = _env_int("EPOCHS", 400)
@@ -1203,14 +1204,34 @@ sensitivity_masks, pruning_stats = make_threshold_connectivity_masks(model, sens
 prune_stats = dict(pruning_stats)
 target_sparsity = float(prune_stats["actual_prune_fraction_eligible"])
 
+allowed_masks = {
+    name: torch.ones_like(p, dtype=torch.bool) if is_prunable_parameter(name, p, cfg) else torch.zeros_like(p, dtype=torch.bool)
+    for name, p in model.named_parameters()
+}
+
 prune_images, prune_targets = next(iter(train_loader))
 prune_images = prune_images.to(device, non_blocking=True)
 prune_targets = prune_targets.to(device, non_blocking=True)
 
 if PRUNING_METHOD == "snip":
-    masks = build_snip_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
+    masks = build_snip_masks(
+        model,
+        prune_images,
+        prune_targets,
+        prune_criterion,
+        target_sparsity,
+        allowed_masks=allowed_masks,
+    )
 elif PRUNING_METHOD == "synflow":
-    masks = build_synflow_masks(model, prune_images, prune_targets, prune_criterion, target_sparsity)
+    masks = build_synflow_masks(
+        model,
+        prune_images,
+        prune_targets,
+        prune_criterion,
+        target_sparsity,
+        allowed_masks=allowed_masks,
+        iterations=cfg.synflow_iterations,
+    )
 else:
     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
 
@@ -1433,9 +1454,10 @@ def _build_sparse_model_from_masks(
     return dst_model
 
 
-# Rebuild a compact model and train that model directly.
-model = _build_sparse_model_from_masks(model, masks, cfg, device)
-
+# Keep the original ViT parameterization and train with a fixed mask.
+# This keeps SNIP, SynFlow, and sensitivity pruning comparable in the same
+# model family instead of shrinking the architecture differently by method.
+apply_masks_(model, masks)
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
 
@@ -1448,7 +1470,7 @@ ref_topk_idx: Optional[torch.Tensor] = None
 ref_epoch: Optional[int] = None
 mean_abs_sensitivity_history: List[np.ndarray] = []
 
-# Recompute the baseline on the rebuilt sparse model so tensor shapes match.
+# Recompute the baseline on the masked original model so tensor shapes match.
 S_init_dict, init_probe_matrix = compute_sensitivity_scores(
     model,
     sens_loader,
@@ -1488,6 +1510,8 @@ for epoch in range(1, cfg.epochs + 1):
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(optimizer)
         scaler.update()
+        apply_masks_(model, masks)
+        zero_masked_optimizer_state_(optimizer, model, masks)
 
         bsz = images.shape[0]
         loss_sum += float(loss.item()) * bsz
