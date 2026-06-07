@@ -60,7 +60,7 @@ except Exception:
 # Configuration
 # -----------------------------------------------------------------------------
 
-PRUNING_METHOD = 'snip'
+PRUNING_METHOD = 'synflow'
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
@@ -86,7 +86,7 @@ class Config:
     seed: int = _env_int("SEED", 0)
     dataset: str = _env_str("DATASET", "CIFAR10")
     data_dir: str = _env_str("DATA_DIR", "./data")
-    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_snip_pruning")
+    output_dir: str = _env_str("OUTPUT_DIR", "Plots/vit_synflow_pruning")
     download: bool = _env_bool("DOWNLOAD", True)
 
     image_size: int = _env_int("IMAGE_SIZE", 32)
