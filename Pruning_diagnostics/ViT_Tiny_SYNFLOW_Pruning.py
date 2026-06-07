@@ -108,8 +108,8 @@ class Config:
     prune_embeddings: bool = _env_bool("PRUNE_EMBEDDINGS", True)
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
-    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.90)
-    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 20)
+    prune_fraction: float = _env_float("PRUNE_FRACTION", 0.99)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 10)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
@@ -1201,7 +1201,7 @@ sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, devi
 sensitivity_masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
 
 prune_stats = dict(pruning_stats)
-target_sparsity = float(prune_stats["actual_prune_fraction_all_trainable"])
+target_sparsity = float(prune_stats["actual_prune_fraction_eligible"])
 
 prune_images, prune_targets = next(iter(train_loader))
 prune_images = prune_images.to(device, non_blocking=True)
