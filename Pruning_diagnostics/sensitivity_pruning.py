@@ -471,8 +471,8 @@ def compute_eligible_pruning_stats(
     pruned_total = max(0, eligible_total - retained_total)
 
     return {
-        "eligible_parameter_count": float(eligible_total),
-        "retained_eligible_parameter_count": float(retained_total),
-        "pruned_eligible_parameter_count": float(pruned_total),
-        "actual_prune_fraction_eligible": float(pruned_total / max(1, eligible_total)),
+        "eligible_parameter_count_baseline": float(eligible_total),
+        "retained_eligible_parameter_count_baseline": float(retained_total),
+        "pruned_eligible_parameter_count_baseline": float(pruned_total),
+        "actual_prune_fraction_eligible_baseline": float(pruned_total / max(1, eligible_total)),
     }
