@@ -422,3 +422,49 @@ def probe_covariance_eigvals(probe_matrix: Optional[torch.Tensor]) -> Optional[t
 def save_json(path: Path, payload) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+def compute_eligible_pruning_stats(
+    model: nn.Module,
+    masks: Dict[str, torch.Tensor],
+    cfg,
+) -> Dict[str, float]:
+    """
+    Compute pruning stats over eligible parameters.
+
+    Args:
+        model: PyTorch module.
+        masks: Dict mapping parameter name -> boolean mask tensor.
+               True means retained, False means pruned.
+        cfg: Config object used by is_prunable_parameter(...).
+
+    Returns:
+        Dict with:
+          - eligible_parameter_count
+          - retained_eligible_parameter_count
+          - pruned_eligible_parameter_count
+          - actual_prune_fraction_eligible
+    """
+    eligible_total = 0
+    retained_total = 0
+
+    for name, p in model.named_parameters():
+        if not is_prunable_parameter(name, p, cfg):
+            continue
+
+        eligible_total += p.numel()
+
+        mask = masks.get(name)
+        if mask is None:
+            # If no mask is provided, treat all eligible weights as retained.
+            retained_total += p.numel()
+        else:
+            retained_total += int(mask.sum().item())
+
+    pruned_total = max(0, eligible_total - retained_total)
+
+    return {
+        "eligible_parameter_count": float(eligible_total),
+        "retained_eligible_parameter_count": float(retained_total),
+        "pruned_eligible_parameter_count": float(pruned_total),
+        "actual_prune_fraction_eligible": float(pruned_total / max(1, eligible_total)),
+    }

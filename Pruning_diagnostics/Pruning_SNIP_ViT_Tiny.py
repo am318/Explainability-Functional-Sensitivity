@@ -305,7 +305,6 @@ print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}"
 print(json.dumps(pruning_stats, indent=2))
 print("Training the pruned ViT from scratch")
 
-
 # -----------------------------------------------------------------------------
 # Training, evaluation, and checkpointed sensitivity analysis
 # -----------------------------------------------------------------------------
@@ -321,6 +320,7 @@ active_params = trainable_parameter_count(model)
 model_pruned_pct = 100.0 * (total_params - active_params) / max(1, total_params)
 print(f"Model pruning after sparsification: {model_pruned_pct:.2f}% pruned")
 pruning_stats["Percentage_Pruned"] = model_pruned_pct
+pruning_stats.update(compute_eligible_pruning_stats( model, masks, cfg))
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
