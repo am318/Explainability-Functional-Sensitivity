@@ -277,6 +277,8 @@ else:
 # Apply baseline pruning method
 
 prune_images, prune_targets = next(iter(train_loader))
+prune_images = prune_images.to(device)
+prune_targets = prune_targets.to(device)
 
 if PRUNING_METHOD == "snip":
     masks = build_snip_masks(
