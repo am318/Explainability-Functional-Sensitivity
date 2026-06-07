@@ -1198,11 +1198,20 @@ print("Computing zero-shot sensitivity scores at initialization")
 
 prune_criterion = nn.CrossEntropyLoss()
 
-sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
-sensitivity_masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
+# Derive target sparsity using the same structured iterative path as the
+# sensitivity pruning script so all methods are pruned to the same fraction.
+_ref_model = copy.deepcopy(model)
+if cfg.pruning_strategy.lower() == "structured":
+    _, ref_pruning_stats, _, _, _ = build_structured_masks_iterative(
+        _ref_model, sens_loader, cfg, device
+    )
+else:
+    _ref_scores, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+    _, ref_pruning_stats = make_threshold_connectivity_masks(_ref_model, _ref_scores, cfg)
+del _ref_model
 
-prune_stats = dict(pruning_stats)
-target_sparsity = float(prune_stats["actual_prune_fraction_eligible"])
+pruning_stats = ref_pruning_stats
+target_sparsity = float(ref_pruning_stats["actual_prune_fraction_eligible"])
 
 allowed_masks = {
     name: torch.ones_like(p, dtype=torch.bool) if is_prunable_parameter(name, p, cfg) else torch.zeros_like(p, dtype=torch.bool)
