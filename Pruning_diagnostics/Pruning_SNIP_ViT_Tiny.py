@@ -302,8 +302,6 @@ init_topk_idx = topk_indices(S_init_active, cfg.topk_frac)
 initial_param_mag_active = flatten_param_magnitudes(model)
 
 print(f"Structured pruning complete via strategy={cfg.pruning_strategy.lower()}")
-print(json.dumps(pruning_stats, indent=2))
-print("Training the pruned ViT from scratch")
 
 # -----------------------------------------------------------------------------
 # Training, evaluation, and checkpointed sensitivity analysis
@@ -315,12 +313,10 @@ criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
 # Rebuild a compact model and train that model directly.
 model = build_sparse_model_from_masks(model, masks, cfg, device)
 
-total_params = parameter_count(_ref_model)
-active_params = trainable_parameter_count(model)
-model_pruned_pct = 100.0 * (total_params - active_params) / max(1, total_params)
-print(f"Model pruning after sparsification: {model_pruned_pct:.2f}% pruned")
-pruning_stats["Percentage_Pruned"] = model_pruned_pct
 pruning_stats.update(compute_eligible_pruning_stats( model, masks, cfg))
+
+print(json.dumps(pruning_stats, indent=2))
+print("Training the pruned ViT from scratch")
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 scaler = torch.amp.GradScaler("cuda", enabled=(cfg.amp and device.type == "cuda"))
