@@ -521,7 +521,7 @@ def build_calibrated_baseline_masks(
             best_effective_fraction = candidate_fraction
             best_actual_fraction = actual_fraction
 
-        # Monotonic assumption: higher prune_fraction should generally increase eligible pruning.
+        # Assuming monotonicity
         if actual_fraction < target_actual_prune_fraction:
             search_low = candidate_fraction
         else:

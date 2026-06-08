@@ -111,7 +111,7 @@ class Config:
     iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 10)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
-    sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "mad")  # mad, zscore, rank, none
+    sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "rank")  # mad, zscore, rank, none
     sensitivity_clip_quantile: float = _env_float("SENSITIVITY_CLIP_QUANTILE", 0.05)
     min_embed_keep_fraction: float = _env_float("MIN_EMBED_KEEP_FRACTION", 0.10)
     min_hidden_keep_fraction: float = _env_float("MIN_HIDDEN_KEEP_FRACTION", 0.05)

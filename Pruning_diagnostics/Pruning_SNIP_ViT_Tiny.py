@@ -114,7 +114,7 @@ class Config:
     iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 10)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
-    sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "mad")  # mad, zscore, rank, none
+    sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "rank")  # mad, zscore, rank, none
     sensitivity_clip_quantile: float = _env_float("SENSITIVITY_CLIP_QUANTILE", 0.05)
     min_embed_keep_fraction: float = _env_float("MIN_EMBED_KEEP_FRACTION", 0.10)
     min_hidden_keep_fraction: float = _env_float("MIN_HIDDEN_KEEP_FRACTION", 0.05)
@@ -284,19 +284,6 @@ prune_targets = prune_targets.to(device)
 
 # PRUNING SEARCH
 
-# if PRUNING_METHOD == "snip":
-#     masks = build_snip_masks(
-#         model, prune_images, prune_targets, nn.CrossEntropyLoss(), float(pruning_stats['actual_prune_fraction_eligible'])
-#     )
-   
-# elif PRUNING_METHOD == "synflow":
-#     masks = build_synflow_masks(
-#         model, prune_images, prune_targets, nn.CrossEntropyLoss(), float(pruning_stats['actual_prune_fraction_eligible'])
-#     )
-   
-# else:
-#     raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
-
 target_actual_prune_fraction = float(pruning_stats['actual_prune_fraction_eligible'])
 
 masks, baseline_pruning_stats, baseline_effective_fraction = build_calibrated_baseline_masks(
@@ -306,6 +293,7 @@ masks, baseline_pruning_stats, baseline_effective_fraction = build_calibrated_ba
     target_actual_prune_fraction,
     cfg,
     device,
+    PRUNING_METHOD,
     _ref_model,
 )
 
