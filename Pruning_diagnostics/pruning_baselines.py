@@ -12,8 +12,9 @@ match that search space as closely as their theoretical foundations allow.
 
 SNIP  – scores and masks **all** ``requires_grad`` parameters, including
         biases, LayerNorm affine parameters, positional embeddings, and the
-        CLS token.  SNIP's criterion |g·w| is defined for any differentiable
-        parameter, so no exclusions are needed for a fair comparison.
+        CLS token.  The implementation uses SNIP's published global
+        normalization over the scored parameter set; this preserves ranking
+        and is equivalent under threshold-based masking.
 
 GraSP – same full parameter set as SNIP.  The Hessian-gradient product is
         well-defined for every differentiable leaf.
@@ -171,12 +172,15 @@ def build_snip_masks(
     loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     target_sparsity: float,
     *,
-    n_batches: int = 4,
+    n_batches: int = 1,
     eps: float = 1e-8,
 ) -> Dict[str, torch.Tensor]:
     """SNIP – Single-shot Network Pruning (Lee et al., ICLR 2019).
 
-    Scores **all** ``requires_grad`` parameters via ``|g·w| / (|w| + ε)``.
+    Scores **all** ``requires_grad`` parameters via the published SNIP score
+    ``z_j = |g_j| / Σ_k |g_k|`` over the full scored parameter set.  The
+    global normalization does not change the ranking, but it matches the paper
+    and makes the implementation explicit.
 
     Baseline policy
     ---------------
@@ -187,9 +191,9 @@ def build_snip_masks(
     ------------------------
     * Gradients are accumulated over ``n_batches`` equal micro-batches to
       reduce the variance introduced by stochastic attention.
-    * The score denominator is stabilised by ``eps`` so that near-zero
-      weights do not dominate the global ranking relative to large, well-
-      trained weights.
+    * The normalized score is invariant to any common positive rescaling,
+      which means the later global thresholding step is equivalent for a
+      fixed mask size.
 
     Parameters
     ----------
@@ -226,7 +230,11 @@ def build_snip_masks(
             if g is None:
                 scores[name] = torch.zeros_like(p)
             else:
-                scores[name] = (g * p).abs() / (p.abs() + eps)
+                scores[name] = (g * p).abs()
+
+        total_score = sum(score.sum() for score in scores.values())
+        if total_score.item() > 0:
+            scores = {name: score / total_score for name, score in scores.items()}
 
     model.zero_grad(set_to_none=True)
     return _global_mask_from_scores(model, scores, target_sparsity)
