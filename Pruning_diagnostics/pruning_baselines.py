@@ -305,87 +305,18 @@ def build_grasp_masks(
 # SynFlow
 # ---------------------------------------------------------------------------
 
-def build_synflow_masks(
+def _synflow_score_once(
     model: nn.Module,
-    /,
-    *args,
-    **kwargs,
+    params: "OrderedDict[str, torch.Tensor]",
+    image_shape: Tuple[int, ...],
 ) -> Dict[str, torch.Tensor]:
-    """SynFlow – Synaptic Flow Pruning (Tanaka et al., NeurIPS 2020).
+    """Compute one SynFlow saliency pass on the current model state.
 
-    Scores all learnable parameters **except** ``pos_embed``, ``cls_token``,
-    and ``dist_token``.
-
-    Baseline policy and theoretical justification for the narrow exclusion
-    -----------------------------------------------------------------------
-    SynFlow's layer-collapse-free guarantee rests on a synaptic-flow
-    conservation identity: the score of each parameter equals the fraction of
-    the network's total synaptic flow that passes through it.  This identity
-    holds only for *multiplicative* synapses (weights and biases of linear /
-    convolutional layers, LayerNorm affine parameters).
-
-    Positional embeddings and CLS / distillation tokens are *additive* offsets
-    injected after the patch projection; they do not participate in the
-    multiplicative weight-activation product that defines synaptic flow.
-    Including them would break the conservation identity and could cause the
-    method to assign arbitrarily high scores to those tensors, distorting the
-    global threshold.
-
-    LayerNorm ``weight`` and ``bias``, attention biases, and projection biases
-    *are* included because they enter the computation graph multiplicatively or
-    additively in a way that the hook-based scalar captures correctly.
-
-    This exclusion is the only theoretically motivated deviation from a fully
-    unconstrained parameter set and should be disclosed as a footnote in the
-    paper.
-
-    ViT-specific adjustments
-    ------------------------
-    * The dummy input is built from the raw **image** shape ``(B,C,H,W)`` so
-      the patch-embedding Conv2d is always part of the dataflow.
-    * The backward scalar is the sum of **absolute pre-activation values**
-      accumulated by forward hooks on ``nn.Linear``, ``nn.Conv2d``, and
-      ``nn.LayerNorm`` modules — not the sum of final logits.  This preserves
-      the conservation identity through the attention softmax.
-    * Weights are temporarily replaced by their absolute values; ``sign(0)``
-      is mapped to ``+1`` to prevent permanent annihilation of zero-valued
-      entries.  Originals are restored via ``p.data.copy_()`` rather than
-      ``p.mul_(sign)`` to avoid the same bug.
-
-    Accepted call signatures
-    ------------------------
-    Canonical::
-
-        build_synflow_masks(model, target_sparsity, image_shape)
-
-    SNIP-compatible drop-in (extra data arguments are ignored)::
-
-        build_synflow_masks(model, x, y, loss_fn, target_sparsity)
-
-    Parameters
-    ----------
-    model:
-        ViT model.
-    target_sparsity:
-        Fraction of scored parameters to remove.
-    image_shape:
-        Full image tensor shape, e.g. ``(1, 3, 224, 224)``.  In SNIP-
-        compatible mode this is inferred from the leading tensor argument
-        (which must be 4-D).
+    This uses the same hook-based scalar as the existing implementation:
+    sum of absolute activations over Linear / Conv2d / LayerNorm outputs.
     """
-    target_sparsity, image_shape = _parse_synflow_args(args, kwargs)
     device = next(model.parameters()).device
-    params = _synflow_params(model)
 
-    # Save originals; set all weights to |w|, mapping sign(0) → +1
-    saved: Dict[str, torch.Tensor] = {}
-    for name, p in params.items():
-        saved[name] = p.data.clone()
-        s = torch.sign(p.data)
-        s[s == 0] = 1
-        p.data.copy_(p.data.abs())
-
-    # Forward hooks accumulate sum(|activation|) over Linear/Conv2d/LayerNorm
     _accum = [torch.tensor(0.0, device=device)]
     hooks = []
 
@@ -400,6 +331,7 @@ def build_synflow_masks(
 
     x_ones = torch.ones(image_shape, device=device)
     model.zero_grad(set_to_none=True)
+
     try:
         model(x_ones)
         _accum[0].backward()
@@ -411,16 +343,127 @@ def build_synflow_masks(
     with torch.no_grad():
         for name, p in params.items():
             g = p.grad
-            scores[name] = (p * g).abs().detach() if g is not None \
-                           else torch.zeros_like(p)
-
-    # Restore original weights
-    with torch.no_grad():
-        for name, p in params.items():
-            p.data.copy_(saved[name])
+            scores[name] = (p * g).abs().detach() if g is not None else torch.zeros_like(p)
 
     model.zero_grad(set_to_none=True)
-    return _global_mask_from_scores(model, scores, target_sparsity)
+    return scores
+
+
+def build_synflow_masks(
+    model: nn.Module,
+    /,
+    *args,
+    **kwargs,
+) -> Dict[str, torch.Tensor]:
+    """SynFlow – Synaptic Flow Pruning (Tanaka et al., NeurIPS 2020).
+
+    This implementation is iterative, not single-shot:
+    it repeatedly scores the surviving weights and prunes geometrically
+    toward the requested final sparsity.
+
+    Accepted call signatures
+    ------------------------
+    Canonical::
+
+        build_synflow_masks(model, target_sparsity, image_shape)
+
+    SNIP-compatible drop-in::
+
+        build_synflow_masks(model, x, y, loss_fn, target_sparsity)
+
+    Extra keyword arguments
+    -----------------------
+    n_steps: int, default=100
+        Number of iterative prune/rescore rounds.
+
+    Notes
+    -----
+    - Parameters named ``pos_embed``, ``cls_token``, and ``dist_token``
+      are excluded, as in the existing implementation.
+    - Already-pruned weights are never reintroduced.
+    - The final mask is returned directly; there is no extra thresholding
+      pass after the iterative schedule.
+    """
+    n_steps = int(kwargs.pop("n_steps", 100))
+    target_sparsity, image_shape = _parse_synflow_args(args, kwargs)
+
+    if n_steps < 1:
+        raise ValueError(f"n_steps must be >= 1, got {n_steps}")
+
+    device = next(model.parameters()).device
+    params = _synflow_params(model)
+
+    # Save originals; set all scored weights to |w|
+    saved: Dict[str, torch.Tensor] = {}
+    for name, p in params.items():
+        saved[name] = p.data.clone()
+        p.data.copy_(p.data.abs())
+
+    # Track the surviving weights among scored parameters
+    active_masks: Dict[str, torch.Tensor] = {
+        name: torch.ones_like(p, dtype=torch.bool) for name, p in params.items()
+    }
+
+    total_scored = sum(p.numel() for p in params.values())
+    target_keep_fraction = 1.0 - float(target_sparsity)
+
+    try:
+        for step in range(n_steps):
+            # Geometric keep schedule: 1.0 -> target_keep_fraction
+            frac = (step + 1) / n_steps
+            desired_keep_fraction = target_keep_fraction ** frac
+            desired_keep = max(1, int(round(desired_keep_fraction * total_scored)))
+
+            # Score the current surviving subnetwork
+            scores = _synflow_score_once(model, params, image_shape)
+
+            # Mask out already-pruned entries so they can never come back
+            flat_scores = []
+            flat_sizes = []
+            for name, p in params.items():
+                s = scores[name].reshape(-1)
+                m = active_masks[name].reshape(-1)
+                s = s.masked_fill(~m, float("-inf"))
+                flat_scores.append(s)
+                flat_sizes.append(p.numel())
+
+            flat = torch.cat(flat_scores)
+            current_active = int(torch.isfinite(flat).sum().item())
+            n_keep = min(desired_keep, current_active)
+            n_keep = max(1, n_keep)
+
+            keep_idx = torch.topk(flat, n_keep, largest=True, sorted=False).indices
+            new_flat_mask = torch.zeros_like(flat, dtype=torch.bool)
+            new_flat_mask[keep_idx] = True
+
+            # Slice the global mask back into per-parameter tensors
+            offset = 0
+            for name, p in params.items():
+                n = p.numel()
+                active_masks[name] = new_flat_mask[offset : offset + n].view_as(p)
+                offset += n
+
+            # Zero out pruned scored weights before the next rescoring pass
+            with torch.no_grad():
+                for name, p in params.items():
+                    p.data.mul_(active_masks[name].to(dtype=p.dtype))
+
+    finally:
+        # Restore original weights
+        with torch.no_grad():
+            for name, p in params.items():
+                p.data.copy_(saved[name])
+
+        model.zero_grad(set_to_none=True)
+
+    # Build full mask dict for all requires_grad parameters
+    masks: Dict[str, torch.Tensor] = {}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        masks[name] = active_masks.get(name, torch.ones_like(p, dtype=torch.bool))
+
+    return masks
 
 
 def _parse_synflow_args(
