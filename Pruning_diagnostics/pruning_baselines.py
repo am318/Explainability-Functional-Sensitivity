@@ -52,6 +52,11 @@ import torch.nn as nn
 from collections import OrderedDict
 from typing import Callable, Dict, Tuple
 
+import copy
+
+from sensitivity_pruning import *
+
+from build_sparse_model import *
 
 # ---------------------------------------------------------------------------
 # Parameter enumeration helpers
@@ -457,3 +462,74 @@ def _parse_synflow_args(
         raise TypeError("image_shape could not be inferred; pass it explicitly.")
 
     return float(target_sparsity), tuple(image_shape)
+
+def build_calibrated_baseline_masks(
+    base_model: nn.Module,
+    prune_images: torch.Tensor,
+    prune_targets: torch.Tensor,
+    target_actual_prune_fraction: float,
+    cfg,
+    device: torch.device,
+    PRUNING_METHOD: str,
+    ref_model,
+    max_search_rounds: int = 30,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], float]:
+    """Search for an effective prune_fraction that best matches the target eligible prune rate."""
+
+    criterion = nn.CrossEntropyLoss()
+    search_low = 0.0
+    search_high = 0.9999
+    best_masks = None
+    best_stats = None
+    best_effective_fraction = None
+    best_actual_fraction = None
+    best_abs_error = float("inf")
+
+    for _ in range(max_search_rounds):
+        candidate_fraction = 0.5 * (search_low + search_high)
+
+        if PRUNING_METHOD == "snip":
+            candidate_masks = build_snip_masks(
+                base_model,
+                prune_images,
+                prune_targets,
+                criterion,
+                candidate_fraction,
+            )
+        elif PRUNING_METHOD == "synflow":
+            candidate_masks = build_synflow_masks(
+                base_model,
+                prune_images,
+                prune_targets,
+                criterion,
+                candidate_fraction,
+            )
+        else:
+            raise ValueError(f"Unsupported PRUNING_METHOD={PRUNING_METHOD!r}")
+
+        candidate_model = copy.deepcopy(base_model)
+        apply_masks_(candidate_model, candidate_masks)
+        candidate_sparse_model = build_sparse_model_from_masks(candidate_model, candidate_masks, cfg, device)
+        candidate_stats = compute_eligible_pruning_stats(ref_model, candidate_sparse_model, candidate_masks, cfg)
+        actual_fraction = float(candidate_stats["actual_prune_fraction_eligible_baseline"])
+        abs_error = abs(actual_fraction - target_actual_prune_fraction)
+
+        if abs_error < best_abs_error:
+            best_abs_error = abs_error
+            best_masks = candidate_masks
+            best_stats = candidate_stats
+            best_effective_fraction = candidate_fraction
+            best_actual_fraction = actual_fraction
+
+        # Monotonic assumption: higher prune_fraction should generally increase eligible pruning.
+        if actual_fraction < target_actual_prune_fraction:
+            search_low = candidate_fraction
+        else:
+            search_high = candidate_fraction
+
+    assert best_masks is not None and best_stats is not None and best_effective_fraction is not None and best_actual_fraction is not None
+    best_stats = dict(best_stats)
+    best_stats["baseline_effective_prune_fraction"] = float(best_effective_fraction)
+    best_stats["baseline_target_actual_prune_fraction"] = float(target_actual_prune_fraction)
+    best_stats["baseline_actual_prune_fraction_error"] = float(best_actual_fraction - target_actual_prune_fraction)
+    return best_masks, best_stats, float(best_effective_fraction)

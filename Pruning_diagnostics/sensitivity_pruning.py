@@ -8,6 +8,15 @@ from sensitivity_metrics import *
 import json
 
 
+def _restore_topk_in_vector(mask_vec: torch.Tensor, score_vec: torch.Tensor, k: int) -> int:
+    if mask_vec.numel() == 0 or int(mask_vec.sum().item()) >= k:
+        return 0
+    k = min(k, mask_vec.numel())
+    restore_idx = torch.topk(score_vec.float(), k=k, largest=True, sorted=False).indices
+    before = int(mask_vec.sum().item())
+    mask_vec[restore_idx] = True
+    return int(mask_vec.sum().item()) - before
+
 def _keep_count(total: int, prune_fraction: float) -> int:
     return max(1, min(total, int(math.ceil((1.0 - prune_fraction) * total))))
 
@@ -476,3 +485,100 @@ def compute_eligible_pruning_stats(
         "pruned_eligible_parameter_count_baseline": float(pruned_total),
         "actual_prune_fraction_eligible_baseline": float(pruned_total / max(1, eligible_total)),
     }
+
+def connectivity_close_dense_weight(mask: torch.Tensor, scores: torch.Tensor, min_conn: int) -> int:
+    """Restore incident edges so dense/conv weights have no empty row/column groups."""
+    restored = 0
+    if mask.ndim == 2:
+        for row in range(mask.shape[0]):
+            restored += _restore_topk_in_vector(mask[row, :], scores[row, :], min_conn)
+        for col in range(mask.shape[1]):
+            restored += _restore_topk_in_vector(mask[:, col], scores[:, col], min_conn)
+    elif mask.ndim == 4:
+        # Conv2d: flatten spatial kernels when checking output/input channels.
+        out_ch, in_ch = mask.shape[:2]
+        flat_mask_out = mask.reshape(out_ch, -1)
+        flat_scores_out = scores.reshape(out_ch, -1)
+        for row in range(out_ch):
+            restored += _restore_topk_in_vector(flat_mask_out[row], flat_scores_out[row], min_conn)
+        flat_mask_in = mask.permute(1, 0, 2, 3).reshape(in_ch, -1)
+        flat_scores_in = scores.permute(1, 0, 2, 3).reshape(in_ch, -1)
+        for col in range(in_ch):
+            restored += _restore_topk_in_vector(flat_mask_in[col], flat_scores_in[col], min_conn)
+    return restored
+
+
+def make_threshold_connectivity_masks(
+    model: nn.Module,
+    scores: Dict[str, torch.Tensor],
+    cfg,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    masks: Dict[str, torch.Tensor] = {}
+    eligible_total = 0
+    raw_retained = 0
+    restored_total = 0
+
+    for name, p in model.named_parameters():
+        score = scores[name].to(device=p.device, dtype=torch.float32)
+        if is_prunable_parameter(name, p, cfg):
+            eligible_total += p.numel()
+            mask = score >= float(cfg.prune_threshold)
+            floor_keep = 1
+            if p.ndim == 4 and "patch_embed" in name:
+                floor_keep = min_keep_count(p.numel(), cfg.min_embed_keep_fraction)
+            elif p.ndim == 2 and ("mlp.fc1" in name or "mlp.fc2" in name or "attn" in name):
+                floor_keep = min_keep_count(p.numel(), cfg.min_hidden_keep_fraction)
+            if int(mask.sum().item()) < floor_keep:
+                top_idx = torch.topk(score.reshape(-1), k=floor_keep, largest=True, sorted=False).indices
+                mask = torch.zeros_like(score, dtype=torch.bool).reshape(-1)
+                mask[top_idx] = True
+                mask = mask.view_as(score)
+            if cfg.connectivity_closure and p.ndim in (2, 4):
+                restored_total += connectivity_close_dense_weight(mask, score, max(1, cfg.min_connections_per_unit))
+            # Never allow a prunable tensor to become completely empty.
+            if int(mask.sum().item()) == 0:
+                idx = torch.argmax(score.reshape(-1))
+                mask.reshape(-1)[idx] = True
+                restored_total += 1
+            raw_retained += int(mask.sum().item())
+        else:
+            mask = torch.ones_like(p, dtype=torch.bool, device=p.device)
+        masks[name] = mask
+
+    total_trainable = trainable_parameter_count(model)
+    retained_eligible = sum(
+        int(masks[name].sum().item())
+        for name, p in model.named_parameters()
+        if is_prunable_parameter(name, p, cfg)
+    )
+    pruned_eligible = max(0, eligible_total - retained_eligible)
+    stats = {
+        "eligible_parameter_count": float(eligible_total),
+        "threshold": float(cfg.prune_threshold),
+        "retained_eligible_parameter_count": float(retained_eligible),
+        "pruned_eligible_parameter_count": float(pruned_eligible),
+        "actual_prune_fraction_eligible": float(pruned_eligible / max(1, eligible_total)),
+        "actual_prune_fraction_all_trainable": float(pruned_eligible / max(1, total_trainable)),
+        "connectivity_restored_coordinate_count": float(restored_total),
+        "connectivity_closure": bool(cfg.connectivity_closure),
+        "min_connections_per_unit": int(cfg.min_connections_per_unit),
+    }
+    return masks, stats
+
+
+def apply_masks_(model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            p.mul_(masks[name].to(device=p.device, dtype=p.dtype))
+
+
+
+def zero_masked_optimizer_state_(optimizer: torch.optim.Optimizer, model: nn.Module, masks: Dict[str, torch.Tensor]) -> None:
+    for name, p in model.named_parameters():
+        state = optimizer.state.get(p)
+        if not state:
+            continue
+        mask = masks[name].to(device=p.device, dtype=p.dtype)
+        for value in state.values():
+            if torch.is_tensor(value) and value.shape == p.shape:
+                value.mul_(mask)
