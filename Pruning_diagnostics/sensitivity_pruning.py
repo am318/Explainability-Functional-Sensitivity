@@ -136,13 +136,17 @@ def _build_structured_selection_masks(
         n_embed_groups = embed_dim
 
     embed_group_scores = torch.zeros(n_embed_groups, dtype=torch.float32)
+    embed_group_counts = torch.zeros(n_embed_groups, dtype=torch.float32)
+
     hidden_scores: Dict[int, torch.Tensor] = {}
+    hidden_counts: Dict[int, torch.Tensor] = {}
     raw_unit_counts = {"embed": 0, "hidden": 0}
 
     for name, p in model.named_parameters():
         if name not in scores:
             continue
         s = scores[name]
+
         emb = _tensor_group_scores(name, s, p, cfg)
         if emb is not None:
             emb = _normalize_unit_scores(emb, cfg)
@@ -174,6 +178,7 @@ def _build_structured_selection_masks(
 
             if emb is not None and emb.numel() == n_embed_groups:
                 embed_group_scores.add_(emb.float())
+                embed_group_counts.add_(torch.ones_like(emb, dtype=torch.float32))
                 raw_unit_counts["embed"] += 1
 
         # Extra embed-channel contributions from MLP projections.
@@ -185,7 +190,9 @@ def _build_structured_selection_masks(
                 elif embed_contrib.numel() != n_embed_groups:
                     embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
                 embed_group_scores.add_(embed_contrib.float())
+                embed_group_counts.add_(torch.ones_like(embed_contrib, dtype=torch.float32))
                 raw_unit_counts["embed"] += 1
+
         if "mlp.fc2.weight" in name and p.ndim == 2:
             embed_contrib = _normalize_unit_scores(s.abs().mean(dim=1), cfg)
             if embed_contrib.numel() == embed_dim:
@@ -194,6 +201,7 @@ def _build_structured_selection_masks(
                 elif embed_contrib.numel() != n_embed_groups:
                     embed_contrib = embed_contrib[:n_embed_groups * group_size].reshape(n_embed_groups, group_size).mean(dim=1)
                 embed_group_scores.add_(embed_contrib.float())
+                embed_group_counts.add_(torch.ones_like(embed_contrib, dtype=torch.float32))
                 raw_unit_counts["embed"] += 1
 
         hid = _hidden_unit_scores(name, s, p)
@@ -202,13 +210,24 @@ def _build_structured_selection_masks(
             block_match = re.search(r"blocks\.(\d+)\.mlp\.fc1", name)
             if block_match:
                 idx = int(block_match.group(1))
-                hidden_scores.setdefault(idx, torch.zeros_like(hid))
+                if idx not in hidden_scores:
+                    hidden_scores[idx] = torch.zeros_like(hid)
+                    hidden_counts[idx] = torch.zeros_like(hid, dtype=torch.float32)
                 hidden_scores[idx].add_(hid.float())
+                hidden_counts[idx].add_(torch.ones_like(hid, dtype=torch.float32))
                 raw_unit_counts["hidden"] += 1
 
-    embed_keep = max(_keep_count(n_embed_groups, effective_prune_fraction), min_keep_count(n_embed_groups, cfg.min_embed_keep_fraction))
+    # Average the aggregated contributions so units with more contributing tensors
+    # do not dominate purely by count.
+    embed_group_scores = embed_group_scores / embed_group_counts.clamp_min(1.0)
+
+    embed_keep = max(
+        _keep_count(n_embed_groups, effective_prune_fraction),
+        min_keep_count(n_embed_groups, cfg.min_embed_keep_fraction),
+    )
     embed_sel = torch.zeros(n_embed_groups, dtype=torch.bool)
     embed_sel[torch.topk(embed_group_scores, k=embed_keep, largest=True, sorted=False).indices] = True
+
     embed_channel_sel = embed_sel.repeat_interleave(group_size)
     if embed_channel_sel.numel() < embed_dim:
         pad = torch.zeros(embed_dim - embed_channel_sel.numel(), dtype=torch.bool)
@@ -218,7 +237,11 @@ def _build_structured_selection_masks(
 
     hidden_sel: Dict[int, torch.Tensor] = {}
     for idx, hs in hidden_scores.items():
-        keep = max(_keep_count(hs.numel(), effective_prune_fraction), min_keep_count(hs.numel(), cfg.min_hidden_keep_fraction))
+        hs = hs / hidden_counts[idx].clamp_min(1.0)
+        keep = max(
+            _keep_count(hs.numel(), effective_prune_fraction),
+            min_keep_count(hs.numel(), cfg.min_hidden_keep_fraction),
+        )
         sel = torch.zeros_like(hs, dtype=torch.bool)
         sel[torch.topk(hs, k=keep, largest=True, sorted=False).indices] = True
         hidden_sel[idx] = sel
@@ -232,7 +255,9 @@ def _build_structured_selection_masks(
         if not is_prunable_parameter(name, p, cfg):
             masks[name] = torch.ones_like(p, dtype=torch.bool)
             continue
+
         eligible_total += p.numel()
+
         if name in {"cls_token", "pos_embed"}:
             mask = embed_channel_sel.view(1, 1, -1).expand_as(p).clone()
         elif "patch_embed.proj.weight" in name and p.ndim == 4:
@@ -242,7 +267,10 @@ def _build_structured_selection_masks(
         elif "attn.in_proj_weight" in name and p.ndim == 2:
             row_sel = embed_channel_sel.repeat(3)
             if row_sel.numel() != p.shape[0]:
-                row_sel = row_sel[:p.shape[0]] if row_sel.numel() > p.shape[0] else torch.cat([row_sel, torch.zeros(p.shape[0] - row_sel.numel(), dtype=torch.bool)], dim=0)
+                row_sel = row_sel[:p.shape[0]] if row_sel.numel() > p.shape[0] else torch.cat(
+                    [row_sel, torch.zeros(p.shape[0] - row_sel.numel(), dtype=torch.bool)],
+                    dim=0,
+                )
             col_sel = embed_channel_sel
             mask = row_sel.view(-1, 1).expand_as(p).clone() & col_sel.view(1, -1).expand_as(p)
         elif "attn.in_proj_bias" in name and p.ndim == 1:
@@ -277,12 +305,16 @@ def _build_structured_selection_masks(
             mask = torch.ones_like(p, dtype=torch.bool)
 
         if cfg.connectivity_closure and p.ndim in (2, 4):
-            # Keep at least one coordinate per row/column group after structured masking.
-            restored_total += connectivity_close_dense_weight(mask, scores[name].to(mask.device), max(1, cfg.min_connections_per_unit))
+            restored_total += connectivity_close_dense_weight(
+                mask,
+                scores[name].to(mask.device),
+                max(1, cfg.min_connections_per_unit),
+            )
         if int(mask.sum().item()) == 0:
             idx = torch.argmax(scores[name].reshape(-1))
             mask.reshape(-1)[idx] = True
             restored_total += 1
+
         retained_total += int(mask.sum().item())
         masks[name] = mask
 
@@ -346,7 +378,14 @@ def build_structured_masks_iterative(
     device: torch.device,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor], Dict[str, torch.Tensor]]:
     """Iteratively recompute sensitivities and refine a structured mask."""
-    params = dict(model.named_parameters())
+    import copy
+
+    # Keep the original model untouched until the end.
+    # Iterative pruning happens on a working copy so early rounds do not permanently
+    # destroy state in the caller's model.
+    working_model = copy.deepcopy(model)
+
+    params = dict(working_model.named_parameters())
     active_masks: Dict[str, torch.Tensor] = {
         name: torch.ones_like(p, dtype=torch.bool, device=p.device)
         for name, p in params.items()
@@ -359,9 +398,13 @@ def build_structured_masks_iterative(
     final_scores: Dict[str, torch.Tensor] = {}
 
     round_fractions: List[float] = []
-    for round_idx in range(cfg.iterative_pruning_rounds):
+
+    total_rounds = max(1, int(cfg.iterative_pruning_rounds))
+    target_prune_fraction = float(cfg.prune_fraction)
+
+    for round_idx in range(total_rounds):
         scores, _ = compute_sensitivity_scores(
-            model,
+            working_model,
             loader,
             cfg,
             device,
@@ -369,17 +412,23 @@ def build_structured_masks_iterative(
         )
         final_scores = scores
 
-        round_prune_fraction = _iterative_prune_fraction(cfg, round_idx)
+        # Conservative early pruning schedule:
+        # quadratic ramp keeps the first rounds milder than the original linear ramp.
+        if cfg.gradual_sparsification:
+            progress = float(round_idx + 1) / float(total_rounds)
+            round_prune_fraction = target_prune_fraction * (progress * progress)
+        else:
+            round_prune_fraction = target_prune_fraction
         round_fractions.append(round_prune_fraction)
 
         candidate_masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
-            model,
+            working_model,
             scores,
             cfg,
             prune_fraction=round_prune_fraction,
         )
 
-        # Make pruning cumulative without changing the round schedule.
+        # Make pruning cumulative without hard-mutating the caller's model.
         for name, cand in candidate_masks.items():
             if is_prunable_parameter(name, params[name], cfg):
                 candidate_masks[name] = _intersect_and_keep_one(
@@ -395,13 +444,19 @@ def build_structured_masks_iterative(
         final_embed_sel = embed_sel
         final_hidden_sel = hidden_sel
         active_masks = candidate_masks
-        apply_masks_(model, candidate_masks)
 
-    final_stats["iterative_rounds_completed"] = float(cfg.iterative_pruning_rounds)
+        # Apply masks only to the working copy used for the next round's scoring.
+        apply_masks_(working_model, candidate_masks)
+
+    # Apply only the final mask to the original model.
+    apply_masks_(model, final_masks)
+
+    final_stats["iterative_rounds_completed"] = float(total_rounds)
     final_stats["gradual_sparsification"] = bool(cfg.gradual_sparsification)
     final_stats["round_prune_fraction_schedule"] = [float(x) for x in round_fractions]
-    final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(cfg.prune_fraction)
+    final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(target_prune_fraction)
     final_stats["cumulative_iterative_pruning"] = True
+    final_stats["early_round_schedule"] = "quadratic" if cfg.gradual_sparsification else "constant"
     return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
 
 
