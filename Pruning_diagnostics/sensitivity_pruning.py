@@ -1006,6 +1006,87 @@ def connectivity_close_dense_weight(mask: torch.Tensor, scores: torch.Tensor, mi
 
     return restored
 
+def connectivity_close_dense_weight_cheap(mask: torch.Tensor, scores: torch.Tensor, min_conn: int) -> int:
+    """
+    Fast connectivity repair for dense / conv weights.
+
+    Compromise policy:
+      - enforce a minimum of `min_conn` kept entries per row and per column
+      - use a single local repair pass
+      - avoid any post-repair trimming or global greedy optimization
+
+    This is intended for zero-shot pruning where runtime matters more than
+    finding a globally minimal repair set.
+
+    Returns:
+        Number of coordinates newly restored.
+    """
+    if min_conn <= 0 or mask.numel() == 0:
+        return 0
+
+    mask = mask.bool()
+    scores = scores.detach().float()
+    restored = 0
+
+    def _repair_2d(mask_2d: torch.Tensor, score_2d: torch.Tensor) -> int:
+        added = 0
+
+        # Repair row deficits.
+        row_counts = mask_2d.sum(dim=1)
+        row_deficit = (min_conn - row_counts).clamp_min(0)
+        if int(row_deficit.sum().item()) > 0:
+            for r in torch.nonzero(row_deficit > 0, as_tuple=False).flatten().tolist():
+                need = int(row_deficit[r].item())
+                if need <= 0:
+                    continue
+                candidates = (~mask_2d[r]).nonzero(as_tuple=False).flatten()
+                if candidates.numel() == 0:
+                    continue
+                k = min(need, int(candidates.numel()))
+                top_idx = torch.topk(score_2d[r, candidates].float(), k=k, largest=True, sorted=False).indices
+                chosen = candidates[top_idx]
+                before = int(mask_2d[r].sum().item())
+                mask_2d[r, chosen] = True
+                added += int(mask_2d[r].sum().item()) - before
+
+        # Repair column deficits.
+        col_counts = mask_2d.sum(dim=0)
+        col_deficit = (min_conn - col_counts).clamp_min(0)
+        if int(col_deficit.sum().item()) > 0:
+            for c in torch.nonzero(col_deficit > 0, as_tuple=False).flatten().tolist():
+                need = int(col_deficit[c].item())
+                if need <= 0:
+                    continue
+                candidates = (~mask_2d[:, c]).nonzero(as_tuple=False).flatten()
+                if candidates.numel() == 0:
+                    continue
+                k = min(need, int(candidates.numel()))
+                top_idx = torch.topk(score_2d[candidates, c].float(), k=k, largest=True, sorted=False).indices
+                chosen = candidates[top_idx]
+                before = int(mask_2d[:, c].sum().item())
+                mask_2d[chosen, c] = True
+                added += int(mask_2d[:, c].sum().item()) - before
+
+        return added
+
+    if mask.ndim == 2:
+        restored += _repair_2d(mask, scores)
+
+    elif mask.ndim == 4:
+        # Conv2d: treat output-channel and input-channel connectivity separately.
+        out_ch, in_ch = mask.shape[:2]
+
+        flat_mask = mask.reshape(out_ch, -1)
+        flat_scores = scores.reshape(out_ch, -1)
+        restored += _repair_2d(flat_mask, flat_scores)
+
+        # Re-check input-channel groups after the output-channel pass.
+        flat_mask_in = mask.permute(1, 0, 2, 3).reshape(in_ch, -1)
+        flat_scores_in = scores.permute(1, 0, 2, 3).reshape(in_ch, -1)
+        restored += _repair_2d(flat_mask_in, flat_scores_in)
+
+    return restored
+
 
 def make_threshold_connectivity_masks(
     model: nn.Module,
