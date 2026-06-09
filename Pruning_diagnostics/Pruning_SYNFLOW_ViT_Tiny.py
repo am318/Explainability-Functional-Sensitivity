@@ -270,7 +270,7 @@ if cfg.pruning_strategy.lower() == "structured":
         _ref_model, sens_loader, cfg, device
     )
 else:
-    sensitivity_scores, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+    sensitivity_scores, _, _ = compute_sensitivity_scores(_ref_model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
     masks, pruning_stats = make_threshold_connectivity_masks(_ref_model, sensitivity_scores, cfg)
 
 # Apply baseline pruning method
@@ -334,7 +334,7 @@ ref_epoch: Optional[int] = None
 mean_abs_sensitivity_history: List[np.ndarray] = []
 
 # Recompute the baseline on the rebuilt sparse model so tensor shapes match.
-S_init_dict, init_probe_matrix = compute_sensitivity_scores(
+S_init_dict, init_probe_matrix, _ = compute_sensitivity_scores(
     model,
     sens_loader,
     cfg,
@@ -383,7 +383,7 @@ for epoch in range(1, cfg.epochs + 1):
     should_eval = (epoch == 1) or (epoch % cfg.checkpoint_interval == 0) or (epoch == cfg.epochs)
     if should_eval:
         test_metrics = evaluate(model, test_loader, criterion, device)
-        S_curr, probe_matrix = compute_sensitivity_scores(
+        S_curr, probe_matrix, _ = compute_sensitivity_scores(
             model, sens_loader, cfg, device, probes=cfg.analysis_probes,
             collect_probe_matrix=(epoch == cfg.epochs),
         )
@@ -427,7 +427,7 @@ for epoch in range(1, cfg.epochs + 1):
         )
 
 # Final sensitivity and approximate covariance spectrum.
-S_final_dict, final_probe_matrix = compute_sensitivity_scores(
+S_final_dict, final_probe_matrix, _ = compute_sensitivity_scores(
     model, sens_loader, cfg, device, probes=cfg.analysis_probes,
     collect_probe_matrix=True,
 )
