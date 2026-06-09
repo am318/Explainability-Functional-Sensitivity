@@ -108,7 +108,7 @@ class Config:
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
     prune_fraction: float = _env_float("PRUNE_FRACTION", 0.99)
-    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 20)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 1)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "rank")  # mad, zscore, rank, none
@@ -265,7 +265,7 @@ if cfg.pruning_strategy.lower() == "structured":
         model, sens_loader, cfg, device
     )
 else:
-    sensitivity_scores, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
+    sensitivity_scores, _, _ = compute_sensitivity_scores(model, sens_loader, cfg, device, probes=cfg.sensitivity_probes)
     masks, pruning_stats = make_threshold_connectivity_masks(model, sensitivity_scores, cfg)
 
 S_init_flat_all = flatten_like_model(model, sensitivity_scores)
@@ -302,7 +302,7 @@ ref_epoch: Optional[int] = None
 mean_abs_sensitivity_history: List[np.ndarray] = []
 
 # Recompute the baseline on the rebuilt sparse model so tensor shapes match.
-S_init_dict, init_probe_matrix = compute_sensitivity_scores(
+S_init_dict, init_probe_matrix, _ = compute_sensitivity_scores(
     model,
     sens_loader,
     cfg,
@@ -351,7 +351,7 @@ for epoch in range(1, cfg.epochs + 1):
     should_eval = (epoch == 1) or (epoch % cfg.checkpoint_interval == 0) or (epoch == cfg.epochs)
     if should_eval:
         test_metrics = evaluate(model, test_loader, criterion, device)
-        S_curr, probe_matrix = compute_sensitivity_scores(
+        S_curr, probe_matrix, _ = compute_sensitivity_scores(
             model, sens_loader, cfg, device, probes=cfg.analysis_probes,
             collect_probe_matrix=(epoch == cfg.epochs),
         )
@@ -395,7 +395,7 @@ for epoch in range(1, cfg.epochs + 1):
         )
 
 # Final sensitivity and approximate covariance spectrum.
-S_final_dict, final_probe_matrix = compute_sensitivity_scores(
+S_final_dict, final_probe_matrix, _ = compute_sensitivity_scores(
     model, sens_loader, cfg, device, probes=cfg.analysis_probes,
     collect_probe_matrix=True,
 )
