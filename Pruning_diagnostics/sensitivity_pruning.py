@@ -1114,7 +1114,7 @@ def make_threshold_connectivity_masks(
                 mask[top_idx] = True
                 mask = mask.view_as(score)
             if cfg.connectivity_closure and p.ndim in (2, 4):
-                restored_total += connectivity_close_dense_weight(mask, score, max(1, cfg.min_connections_per_unit))
+                restored_total += connectivity_close_dense_weight_cheap(mask, score, max(1, cfg.min_connections_per_unit))
             # Never allow a prunable tensor to become completely empty.
             if int(mask.sum().item()) == 0:
                 idx = torch.argmax(score.reshape(-1))
