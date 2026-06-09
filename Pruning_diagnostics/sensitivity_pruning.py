@@ -683,7 +683,7 @@ def build_structured_masks_iterative(
         )
 
         progress = float(round_idx + 1) / float(total_rounds)
-        print(progress)
+
         if cfg.gradual_sparsification:
             schedule = _cosine_progress(progress)
             stability_gate = 0.5 + 0.5 * max(0.0, min(1.0, stability))
@@ -694,7 +694,7 @@ def build_structured_masks_iterative(
                 plateau_bonus = 1.0 + 0.15 * max(0.0, stability - previous_stability)
 
             probe_gate = max(0.25, min(1.0, probe_confidence))
-            
+
             round_prune_fraction = (
                 target_prune_fraction
                 * schedule
@@ -849,24 +849,161 @@ def compute_eligible_pruning_stats(
     }
 
 def connectivity_close_dense_weight(mask: torch.Tensor, scores: torch.Tensor, min_conn: int) -> int:
-    """Restore incident edges so dense/conv weights have no empty row/column groups."""
+    """
+    Connectivity repair with a post-repair trim pass.
+
+    Behavior:
+      1) Greedily restore the minimum set of missing coordinates needed to satisfy
+         row/column connectivity constraints.
+      2) Trim any restored coordinates that are redundant after feasibility is reached,
+         while preserving the constraints.
+
+    Returns:
+      Number of restored coordinates that remain after trimming.
+    """
+    if min_conn <= 0 or mask.numel() == 0:
+        return 0
+
+    mask = mask.bool()
+    scores = scores.detach().float()
     restored = 0
+
+    def _repair_and_trim_2d(mask_2d: torch.Tensor, score_2d: torch.Tensor) -> int:
+        added = torch.zeros_like(mask_2d, dtype=torch.bool)
+
+        # Phase 1: minimal greedy repair.
+        while True:
+            row_count = mask_2d.sum(dim=1)
+            col_count = mask_2d.sum(dim=0)
+
+            row_deficit = (min_conn - row_count).clamp_min(0)
+            col_deficit = (min_conn - col_count).clamp_min(0)
+
+            if int(row_deficit.sum().item()) == 0 and int(col_deficit.sum().item()) == 0:
+                break
+
+            candidates = (~mask_2d).nonzero(as_tuple=False)
+            if candidates.numel() == 0:
+                break
+
+            r = candidates[:, 0]
+            c = candidates[:, 1]
+            gain = row_deficit[r] + col_deficit[c]
+
+            if int(gain.max().item()) <= 0:
+                break
+
+            cand_scores = score_2d[r, c]
+            priority = gain.to(torch.float32) * 1e6 + cand_scores
+            best = int(torch.argmax(priority).item())
+
+            i = int(r[best].item())
+            j = int(c[best].item())
+
+            mask_2d[i, j] = True
+            added[i, j] = True
+
+        # Phase 2: trim redundant restored coordinates.
+        if int(added.sum().item()) == 0:
+            return 0
+
+        row_count = mask_2d.sum(dim=1)
+        col_count = mask_2d.sum(dim=0)
+
+        added_idx = added.nonzero(as_tuple=False)
+        added_scores = score_2d[added].reshape(-1)
+        order = torch.argsort(added_scores, descending=False)
+
+        for idx in order.tolist():
+            i = int(added_idx[idx, 0].item())
+            j = int(added_idx[idx, 1].item())
+
+            if not mask_2d[i, j]:
+                continue
+
+            if row_count[i] > min_conn and col_count[j] > min_conn:
+                mask_2d[i, j] = False
+                added[i, j] = False
+                row_count[i] -= 1
+                col_count[j] -= 1
+
+        return int(added.sum().item())
+
     if mask.ndim == 2:
-        for row in range(mask.shape[0]):
-            restored += _restore_topk_in_vector(mask[row, :], scores[row, :], min_conn)
-        for col in range(mask.shape[1]):
-            restored += _restore_topk_in_vector(mask[:, col], scores[:, col], min_conn)
+        restored += _repair_and_trim_2d(mask, scores)
+
     elif mask.ndim == 4:
-        # Conv2d: flatten spatial kernels when checking output/input channels.
+        # Conv2d: enforce connectivity over output and input channels, then trim
+        # any redundant restored coordinates.
         out_ch, in_ch = mask.shape[:2]
         flat_mask_out = mask.reshape(out_ch, -1)
         flat_scores_out = scores.reshape(out_ch, -1)
-        for row in range(out_ch):
-            restored += _restore_topk_in_vector(flat_mask_out[row], flat_scores_out[row], min_conn)
         flat_mask_in = mask.permute(1, 0, 2, 3).reshape(in_ch, -1)
         flat_scores_in = scores.permute(1, 0, 2, 3).reshape(in_ch, -1)
-        for col in range(in_ch):
-            restored += _restore_topk_in_vector(flat_mask_in[col], flat_scores_in[col], min_conn)
+
+        # Repair by output-channel groups.
+        added_out = torch.zeros_like(flat_mask_out, dtype=torch.bool)
+        while True:
+            out_count = flat_mask_out.sum(dim=1)
+            in_count = mask.permute(1, 0, 2, 3).reshape(in_ch, -1).sum(dim=1)
+
+            out_deficit = (min_conn - out_count).clamp_min(0)
+            in_deficit = (min_conn - in_count).clamp_min(0)
+
+            if int(out_deficit.sum().item()) == 0 and int(in_deficit.sum().item()) == 0:
+                break
+
+            candidates = (~flat_mask_out).nonzero(as_tuple=False)
+            if candidates.numel() == 0:
+                break
+
+            r = candidates[:, 0]
+            c = candidates[:, 1]
+            gain = out_deficit[r] + in_deficit[c % in_ch]
+
+            if int(gain.max().item()) <= 0:
+                break
+
+            cand_scores = flat_scores_out[r, c]
+            priority = gain.to(torch.float32) * 1e6 + cand_scores
+            best = int(torch.argmax(priority).item())
+
+            o = int(r[best].item())
+            flat_idx = int(c[best].item())
+
+            flat_mask_out[o, flat_idx] = True
+            added_out[o, flat_idx] = True
+
+        # Sync back to the 4D mask.
+        mask = flat_mask_out.view_as(mask)
+
+        # Trim redundant restored coordinates.
+        if int(added_out.sum().item()) > 0:
+            out_count = mask.reshape(out_ch, -1).sum(dim=1)
+            in_count = mask.permute(1, 0, 2, 3).reshape(in_ch, -1).sum(dim=1)
+
+            added_idx = added_out.nonzero(as_tuple=False)
+            added_scores = flat_scores_out[added_out].reshape(-1)
+            order = torch.argsort(added_scores, descending=False)
+
+            for idx in order.tolist():
+                o = int(added_idx[idx, 0].item())
+                flat_idx = int(added_idx[idx, 1].item())
+
+                if not flat_mask_out[o, flat_idx]:
+                    continue
+
+                i = flat_idx // (mask.shape[2] * mask.shape[3]) if mask.shape[2] * mask.shape[3] > 0 else 0
+
+                if out_count[o] > min_conn and in_count[i] > min_conn:
+                    flat_mask_out[o, flat_idx] = False
+                    added_out[o, flat_idx] = False
+                    out_count[o] -= 1
+                    in_count[i] -= 1
+
+            mask = flat_mask_out.view_as(mask)
+            restored += int(added_out.sum().item())
+
     return restored
 
 

@@ -91,8 +91,8 @@ class Config:
     train_subset: int = _env_int("TRAIN_SUBSET", 0)       # 0 means full train set
     test_subset: int = _env_int("TEST_SUBSET", 0)         # 0 means full test set
     sensitivity_samples: int = _env_int("SENSITIVITY_SAMPLES", 16384)
-    sensitivity_batch_size: int = _env_int("SENSITIVITY_BATCH_SIZE", 512)
-    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 16)
+    sensitivity_batch_size: int = _env_int("SENSITIVITY_BATCH_SIZE", 1024)
+    sensitivity_probes: int = _env_int("SENSITIVITY_PROBES", 64)
 
     patch_size: int = _env_int("PATCH_SIZE", 4)
     embed_dim: int = _env_int("EMBED_DIM", 192)
@@ -108,11 +108,11 @@ class Config:
     prune_head: bool = _env_bool("PRUNE_HEAD", True)
     pruning_strategy: str = _env_str("PRUNING_STRATEGY", "structured")  # structured or threshold
     prune_fraction: float = _env_float("PRUNE_FRACTION", 0.99)
-    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 10)
+    iterative_pruning_rounds: int = _env_int("ITERATIVE_PRUNING_ROUNDS", 20)
     gradual_sparsification: bool = _env_bool("GRADUAL_SPARSIFICATION", True)
     layerwise_normalize_scores: bool = _env_bool("LAYERWISE_NORMALIZE_SCORES", True)
     sensitivity_normalization: str = _env_str("SENSITIVITY_NORMALIZATION", "rank")  # mad, zscore, rank, none
-    sensitivity_clip_quantile: float = _env_float("SENSITIVITY_CLIP_QUANTILE", 0.05)
+    sensitivity_clip_quantile: float = _env_float("SENSITIVITY_CLIP_QUANTILE", 0.03)
     min_embed_keep_fraction: float = _env_float("MIN_EMBED_KEEP_FRACTION", 0.10)
     min_hidden_keep_fraction: float = _env_float("MIN_HIDDEN_KEEP_FRACTION", 0.05)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
@@ -133,8 +133,8 @@ class Config:
     # script remains viable on ViT-scale parameter counts.
     topk_frac: float = _env_float("TOPK_FRAC", 0.10)
     reference_epoch: int = _env_int("REFERENCE_EPOCH", warmup_epochs)  # 0 means first checkpoint after epoch 1
-    analysis_probes: int = _env_int("ANALYSIS_PROBES", 4)
-    analysis_probe_matrix_rows: int = _env_int("ANALYSIS_PROBE_MATRIX_ROWS", 128)
+    analysis_probes: int = _env_int("ANALYSIS_PROBES", 8)
+    analysis_probe_matrix_rows: int = _env_int("ANALYSIS_PROBE_MATRIX_ROWS", 256)
     max_probe_matrix_elements: int = _env_int("MAX_PROBE_MATRIX_ELEMENTS", 50_000_000)
     save_sensitivity_heatmap: bool = _env_bool("SAVE_SENSITIVITY_HEATMAP", True)
     run_manifold: bool = _env_bool("RUN_MANIFOLD", False)
