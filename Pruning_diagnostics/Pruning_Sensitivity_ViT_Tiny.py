@@ -118,7 +118,7 @@ class Config:
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
 
     batch_size: int = _env_int("BATCH_SIZE", 256)
-    epochs: int = _env_int("EPOCHS", 400)
+    epochs: int = _env_int("EPOCHS", 100)
     lr: float = _env_float("LR", 1e-2)
     weight_decay: float = _env_float("WEIGHT_DECAY", 0.08)
     warmup_epochs: int = _env_int("WARMUP_EPOCHS", 20)
