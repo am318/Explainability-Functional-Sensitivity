@@ -50,10 +50,6 @@ from optuna.samplers import TPESampler
 SPACE_SPECS = [
     dict(name="CONNECTIVITY_CLOSURE",       kind="bool",  default=True),
     dict(name="MIN_CONNECTIONS_PER_UNIT",    kind="int",   low=1,    high=8,    default=2),
-    dict(name="PRUNE_BIAS",                  kind="bool",  default=True),
-    dict(name="PRUNE_NORM",                  kind="bool",  default=True),
-    dict(name="PRUNE_EMBEDDINGS",            kind="bool",  default=True),
-    dict(name="PRUNE_HEAD",                  kind="bool",  default=True),
     dict(name="ITERATIVE_PRUNING_ROUNDS",    kind="int",   low=1,    high=30,   default=10),
     dict(name="GRADUAL_SPARSIFICATION",      kind="bool",  default=False),
     dict(name="LAYERWISE_NORMALIZE_SCORES",  kind="bool",  default=True),
@@ -61,7 +57,6 @@ SPACE_SPECS = [
     dict(name="SENSITIVITY_CLIP_QUANTILE",   kind="float", low=0.0,  high=0.10, default=0.01),
     dict(name="MIN_EMBED_KEEP_FRACTION",     kind="float", low=0.01, high=0.50, default=0.10),
     dict(name="MIN_HIDDEN_KEEP_FRACTION",    kind="float", low=0.01, high=0.50, default=0.05),
-    dict(name="PRESERVE_ATTENTION_HEADS",    kind="bool",  default=False),
 ]
 
 
@@ -217,7 +212,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--summary-name", type=str, default="vit_structured_sensitivity_pruning_summary.json")
     p.add_argument("--metric", type=str, default="final_test_accuracy")
     p.add_argument("--trials", type=int, default=250)
-    p.add_argument("--initial-random", type=int, default=25,
+    p.add_argument("--initial-random", type=int, default=40,
                    help="Number of random startup trials before TPE kicks in.")
     p.add_argument("--candidate-pool-size", type=int, default=512,
                    help="n_ei_candidates for TPESampler (EI candidate draws per proposal).")
