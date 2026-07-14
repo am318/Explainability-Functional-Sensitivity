@@ -585,53 +585,70 @@ def build_structured_masks_iterative(
     cfg,
     device: torch.device,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], torch.Tensor, Dict[int, torch.Tensor], Dict[str, torch.Tensor]]:
-    """Iteratively recompute sensitivities and refine a structured mask."""
+    """
+    Mask convention
+    ---------------
+    ``True`` means retained and ``False`` means pruned.  The paper writes M1 and
+    M2 as low-sensitivity tests.  In code, a coordinate/unit is pruned only when
+    it is rejected by both passes; equivalently, the retained masks are unioned.
+    This is the interpretation consistent with the paper's stated M2 rescue
+    mechanism.
+
+    Practical structured adaptation
+    -------------------------------
+
+
+    Optional configuration attributes are read with defaults, so the existing
+    Config class remains valid:
+
+    - ``paper_probe_repeats`` (default 1): independent score estimates per pass; set to 2 or more to enable Student-t UCB inflation.
+    - ``paper_confidence_alpha`` (default 0.05): confidence level parameter.
+    - ``paper_bonferroni`` (default False): family-wise correction.
+    - ``paper_architecture_normalize`` (default True): divide by a frozen
+      architecture-role baseline estimated at the first dense pass.
+    - ``paper_initial_quantile`` (default target / rounds): first prune fraction.
+    - ``paper_quantile_feedback`` (default 0.75): rescue-aware quantile update.
+    - ``paper_max_quantile`` (default adaptive, below 1): maximum tentative prune.
+    - ``paper_target_tolerance`` (default 1e-3): target stopping tolerance.
+    - ``paper_t_critical_cap`` (default 0, disabled): optional numerical cap.
+
+    Returns the same five objects as the original implementation.
+    """
     import copy
+    from statistics import NormalDist
 
-    def _snapshot_similarity(current: Dict[str, torch.Tensor], previous: Optional[Dict[str, torch.Tensor]]) -> float:
-        if not previous:
-            return 1.0
-        total_sim = 0.0
-        total_weight = 0.0
-        for name, cur in current.items():
-            prev = previous.get(name)
-            sim = _vector_similarity(cur, prev) if prev is not None else None
-            if sim is None:
-                continue
-            weight = float(cur.numel())
-            total_sim += float(sim) * weight
-            total_weight += weight
-        if total_weight <= 0:
-            return 1.0
-        return max(-1.0, min(1.0, total_sim / total_weight))
+    target = float(cfg.prune_fraction)
+    total_rounds = max(1, int(cfg.iterative_pruning_rounds))
+    repeats = max(1, int(_cfg_value(cfg, "paper_probe_repeats", 1)))
+    alpha = float(_cfg_value(cfg, "paper_confidence_alpha", 0.05))
+    alpha = max(1e-12, min(0.5, alpha))
+    bonferroni = bool(_cfg_value(cfg, "paper_bonferroni", False))
+    architecture_normalize = bool(_cfg_value(cfg, "paper_architecture_normalize", True))
+    feedback = max(0.0, float(_cfg_value(cfg, "paper_quantile_feedback", 0.75)))
+    tolerance = max(0.0, float(_cfg_value(cfg, "paper_target_tolerance", 1e-3)))
+    critical_cap = max(0.0, float(_cfg_value(cfg, "paper_t_critical_cap", 0.0)))
 
-    def _snapshot_weights(
-        current: Dict[str, torch.Tensor],
-        previous: Optional[Dict[str, torch.Tensor]],
-        confidence_weights: Optional[Dict[str, object]] = None,
-    ) -> Dict[str, float]:
-        if not previous:
-            return {}
-        weights: Dict[str, float] = {}
-        for name, cur in current.items():
-            prev = previous.get(name)
-            sim = _vector_similarity(cur, prev) if prev is not None else None
-            if sim is None:
-                continue
-            stability = max(0.0, min(1.0, 0.5 * (sim + 1.0)))
-            base = 0.55 + 0.45 * stability
-            conf = _as_confidence_scalar(confidence_weights.get(name), 1.0) if confidence_weights else 1.0
-            weights[name] = max(0.25, min(1.0, base * conf))
-        return weights
+    default_initial_quantile = target / float(total_rounds)
+    quantile = float(_cfg_value(cfg, "paper_initial_quantile", default_initial_quantile))
+    quantile = max(0.0, min(target, quantile))
 
-    def _cosine_progress(progress: float) -> float:
-        progress = max(0.0, min(1.0, progress))
-        return 0.5 - 0.5 * math.cos(math.pi * progress)
+    default_max_quantile = min(
+        1.0 - 1e-8,
+        target + max(0.10, 0.50 * (1.0 - target)),
+    )
+    max_quantile = float(_cfg_value(cfg, "paper_max_quantile", default_max_quantile))
+    max_quantile = max(target, min(1.0 - 1e-8, max_quantile))
 
-    # Keep the original model untouched until the end.
-    # Iterative pruning happens on a working copy so early rounds do not permanently
-    # destroy state in the caller's model.
     working_model = copy.deepcopy(model)
+
+    # The paper's architecture-derived normalisation replaces empirical
+    # layerwise rank/z-score normalisation.  Use a shallow configuration copy
+    # for mask construction so the caller's diagnostics configuration is not
+    # mutated.
+    selection_cfg = copy.copy(cfg)
+    if architecture_normalize:
+        selection_cfg.layerwise_normalize_scores = False
+        selection_cfg.sensitivity_normalization = "none"
 
     params = dict(working_model.named_parameters())
     active_masks: Dict[str, torch.Tensor] = {
@@ -639,143 +656,367 @@ def build_structured_masks_iterative(
         for name, p in params.items()
     }
 
-    final_masks: Dict[str, torch.Tensor] = active_masks
-    final_stats: Dict[str, float] = {}
-    final_embed_sel = torch.empty(0, dtype=torch.bool)
-    final_hidden_sel: Dict[int, torch.Tensor] = {}
-    final_scores: Dict[str, torch.Tensor] = {}
+    def _architecture_key(name: str) -> str:
+        # Repeated transformer blocks share an architectural role.  Pooling the
+        # baseline across block indices avoids forcing every individual layer to
+        # have an identical score distribution.
+        return re.sub(r"blocks\.\d+", "blocks.*", name)
 
-    round_fractions: List[float] = []
-    round_stabilities: List[float] = []
-    round_probe_confidences: List[float] = []
-    previous_scores: Optional[Dict[str, torch.Tensor]] = None
-    previous_stability: Optional[float] = None
-    stable_rounds = 0
-    early_stop_triggered = False
+    def _active_eligible_count(masks: Dict[str, torch.Tensor]) -> int:
+        total = 0
+        for name, p in params.items():
+            if is_prunable_parameter(name, p, cfg):
+                total += int(masks[name].sum().item())
+        return max(1, total)
 
-    total_rounds = max(1, int(cfg.iterative_pruning_rounds))
-    target_prune_fraction = float(cfg.prune_fraction)
-    min_rounds = max(1, int(_cfg_value(cfg, 'iterative_min_rounds', 1)))
-    stability_stop = float(_cfg_value(cfg, 'iterative_stability_stop_threshold', 0.995))
-    stability_delta_stop = float(_cfg_value(cfg, 'iterative_stability_delta_stop', 0.005))
+    def _student_t_critical(df: int, tests: int) -> float:
+        """Approximate a two-sided Student-t critical value.
+
+        The Cornish-Fisher expansion is accurate enough for pruning uncertainty
+        inflation and avoids adding a SciPy dependency to the training script.
+        """
+        if df <= 0:
+            return 0.0
+        corrected_tests = max(1, tests if bonferroni else 1)
+        tail = alpha / (2.0 * float(corrected_tests))
+        tail = max(1e-15, min(0.25, tail))
+        p = min(1.0 - 1e-15, max(0.5 + 1e-15, 1.0 - tail))
+        z = float(NormalDist().inv_cdf(p))
+        nu = float(df)
+        z2 = z * z
+        z3 = z2 * z
+        z5 = z3 * z2
+        z7 = z5 * z2
+        value = z
+        value += (z3 + z) / (4.0 * nu)
+        value += (5.0 * z5 + 16.0 * z3 + 3.0 * z) / (96.0 * nu * nu)
+        value += (3.0 * z7 + 19.0 * z5 + 17.0 * z3 - 15.0 * z) / (384.0 * nu ** 3)
+        if critical_cap > 0.0:
+            value = min(value, critical_cap)
+        return max(0.0, value)
+
+    def _estimate_scores_with_ucb(
+        scored_model: nn.Module,
+        masks_for_tests: Dict[str, torch.Tensor],
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], float, float]:
+        samples: List[Dict[str, torch.Tensor]] = []
+        probe_confidences: List[float] = []
+
+        for _ in range(repeats):
+            score_dict, _, meta = compute_sensitivity_scores(
+                scored_model,
+                loader,
+                cfg,
+                device,
+                probes=cfg.sensitivity_probes,
+                collect_probe_matrix=False,
+            )
+            samples.append({
+                name: score.detach().float().cpu()
+                for name, score in score_dict.items()
+            })
+            if isinstance(meta, dict):
+                try:
+                    probe_confidences.append(float(meta.get("probe_confidence", 1.0)))
+                except Exception:
+                    probe_confidences.append(1.0)
+
+        missing = [name for name in params if name not in samples[0]]
+        if missing:
+            raise KeyError(
+                "compute_sensitivity_scores did not return scores for: "
+                + ", ".join(missing[:8])
+            )
+
+        tests = _active_eligible_count(masks_for_tests)
+        critical = _student_t_critical(repeats - 1, tests)
+        means: Dict[str, torch.Tensor] = {}
+        ucbs: Dict[str, torch.Tensor] = {}
+        relative_width_sum = 0.0
+        relative_width_weight = 0.0
+
+        for name in params:
+            stack = torch.stack([sample[name] for sample in samples], dim=0)
+            mean = stack.mean(dim=0)
+            if repeats > 1:
+                standard_error = stack.std(dim=0, unbiased=True) / math.sqrt(float(repeats))
+                ucb = mean + critical * standard_error
+            else:
+                ucb = mean
+            means[name] = mean
+            ucbs[name] = ucb
+
+            if is_prunable_parameter(name, params[name], cfg):
+                active = masks_for_tests[name].detach().bool().cpu()
+                if int(active.sum().item()) > 0:
+                    width = (ucb - mean).abs()[active]
+                    scale = mean.abs()[active].mean().clamp_min(1e-12)
+                    relative_width_sum += float((width.mean() / scale).item()) * float(active.sum().item())
+                    relative_width_weight += float(active.sum().item())
+
+        mean_relative_width = relative_width_sum / max(1.0, relative_width_weight)
+        mean_probe_confidence = (
+            sum(probe_confidences) / len(probe_confidences)
+            if probe_confidences
+            else 1.0
+        )
+        return means, ucbs, float(mean_relative_width), float(mean_probe_confidence)
+
+    def _fit_architecture_baseline(scores: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        sums: Dict[str, float] = {}
+        counts: Dict[str, int] = {}
+        for name, score in scores.items():
+            key = _architecture_key(name)
+            values = score.detach().float().abs().reshape(-1)
+            sums[key] = sums.get(key, 0.0) + float(values.sum().item())
+            counts[key] = counts.get(key, 0) + int(values.numel())
+        return {
+            key: max(1e-12, sums[key] / max(1, counts[key]))
+            for key in sums
+        }
+
+    def _normalise_by_architecture(
+        scores: Dict[str, torch.Tensor],
+        baseline: Dict[str, float],
+    ) -> Dict[str, torch.Tensor]:
+        if not architecture_normalize:
+            return {name: score.clone() for name, score in scores.items()}
+        return {
+            name: score / float(baseline.get(_architecture_key(name), 1.0))
+            for name, score in scores.items()
+        }
+
+    def _cumulative(mask_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        output: Dict[str, torch.Tensor] = {}
+        for name, p in params.items():
+            candidate = mask_dict[name].to(device=p.device, dtype=torch.bool)
+            if is_prunable_parameter(name, p, cfg):
+                candidate = candidate & active_masks[name]
+                if int(candidate.sum().item()) == 0:
+                    # Retain one currently active coordinate. The normal
+                    # structured builders should make this fallback rare.
+                    previous = active_masks[name].reshape(-1)
+                    out = torch.zeros_like(candidate, dtype=torch.bool).reshape(-1)
+                    if int(previous.sum().item()) > 0:
+                        out[torch.nonzero(previous, as_tuple=False)[0, 0]] = True
+                    candidate = out.view_as(candidate)
+            output[name] = candidate
+        return output
+
+    def _union_rescue(
+        first: Dict[str, torch.Tensor],
+        second: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        output: Dict[str, torch.Tensor] = {}
+        for name, p in params.items():
+            if is_prunable_parameter(name, p, cfg):
+                keep = (
+                    first[name].to(device=p.device, dtype=torch.bool)
+                    | second[name].to(device=p.device, dtype=torch.bool)
+                ) & active_masks[name]
+            else:
+                keep = torch.ones_like(p, dtype=torch.bool, device=p.device)
+            output[name] = keep
+        return output
+
+    def _mask_prune_fraction(mask_dict: Dict[str, torch.Tensor]) -> Tuple[int, int, float]:
+        eligible = 0
+        retained = 0
+        for name, p in params.items():
+            if not is_prunable_parameter(name, p, cfg):
+                continue
+            eligible += p.numel()
+            retained += int(mask_dict[name].sum().item())
+        pruned = max(0, eligible - retained)
+        return eligible, retained, float(pruned / max(1, eligible))
+
+    def _derive_structured_selections(
+        mask_dict: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
+        embed_sel = torch.ones(int(cfg.embed_dim), dtype=torch.bool)
+        patch_name = "patch_embed.proj.weight"
+        if patch_name in mask_dict and mask_dict[patch_name].ndim == 4:
+            embed_sel = mask_dict[patch_name].detach().cpu().reshape(mask_dict[patch_name].shape[0], -1).any(dim=1)
+        elif "cls_token" in mask_dict:
+            embed_sel = mask_dict["cls_token"].detach().cpu().reshape(-1, mask_dict["cls_token"].shape[-1]).any(dim=0)
+
+        if bool(cfg.preserve_attention_heads) and int(cfg.num_heads) > 0:
+            head_dim = int(cfg.embed_dim) // int(cfg.num_heads)
+            if head_dim > 0 and int(cfg.embed_dim) % int(cfg.num_heads) == 0:
+                embed_sel = embed_sel.reshape(int(cfg.num_heads), head_dim).any(dim=1)
+
+        hidden_sel: Dict[int, torch.Tensor] = {}
+        for name, mask in mask_dict.items():
+            match = re.search(r"blocks\.(\d+)\.mlp\.fc1\.weight", name)
+            if not match or mask.ndim != 2:
+                continue
+            idx = int(match.group(1))
+            left = mask.detach().cpu().any(dim=1)
+            fc2_name = f"blocks.{idx}.mlp.fc2.weight"
+            if fc2_name in mask_dict and mask_dict[fc2_name].ndim == 2:
+                right = mask_dict[fc2_name].detach().cpu().any(dim=0)
+                left = left | right
+            hidden_sel[idx] = left
+        return embed_sel, hidden_sel
+
+    # First dense pass: it both supplies a score in the zero-pruning case and
+    # freezes the architecture-derived baseline for all later masked passes.
+    dense_mean, dense_ucb, dense_width, dense_probe_conf = _estimate_scores_with_ucb(
+        working_model,
+        active_masks,
+    )
+    architecture_baseline = _fit_architecture_baseline(dense_mean)
+
+    if target <= 0.0:
+        final_scores = _normalise_by_architecture(dense_ucb, architecture_baseline)
+        final_masks = active_masks
+        embed_sel, hidden_sel = _derive_structured_selections(final_masks)
+        apply_masks_(model, final_masks)
+        eligible, retained, achieved = _mask_prune_fraction(final_masks)
+        stats: Dict[str, float] = {
+            "eligible_parameter_count": float(eligible),
+            "retained_eligible_parameter_count": float(retained),
+            "pruned_eligible_parameter_count": float(eligible - retained),
+            "actual_prune_fraction_eligible": float(achieved),
+            "pruning_strategy": "neurips-2026-two-pass-structured",
+            "target_prune_fraction": float(target),
+            "target_sparsity_reached": True,
+            "iterative_rounds_completed": 0.0,
+            "paper_probe_repeats": float(repeats),
+            "paper_confidence_alpha": float(alpha),
+            "paper_bonferroni": bool(bonferroni),
+            "paper_architecture_normalize": bool(architecture_normalize),
+            "initial_mean_relative_ucb_width": float(dense_width),
+            "initial_probe_confidence": float(dense_probe_conf),
+        }
+        return final_masks, stats, embed_sel, hidden_sel, final_scores
+
+    final_masks = active_masks
+    final_scores = _normalise_by_architecture(dense_ucb, architecture_baseline)
+    quantile_schedule: List[float] = []
+    prune_schedule: List[float] = []
+    rescue_schedule: List[float] = []
+    ucb_width_schedule: List[float] = []
+    probe_confidence_schedule: List[float] = []
+    stall_rounds = 0
+    target_reached = False
 
     for round_idx in range(total_rounds):
-        scores, _, score_meta = compute_sensitivity_scores(
-            working_model,
-            loader,
-            cfg,
-            device,
-            probes=cfg.sensitivity_probes,
-            collect_probe_matrix=True,
-        )
-        final_scores = scores
+        # A gradual lower-quantile schedule prevents a single noisy pass from
+        # removing the full target fraction.  Feedback raises the tentative
+        # quantile when M2 rescues many units.
+        scheduled_quantile = target * float(round_idx + 1) / float(total_rounds)
+        quantile = max(quantile, scheduled_quantile)
+        quantile = min(max_quantile, quantile)
+        quantile_schedule.append(float(quantile))
 
-        stability = _snapshot_similarity(scores, previous_scores)
-        round_stabilities.append(float(stability))
-
-        probe_confidence = float(score_meta.get("probe_confidence", 1.0))
-        round_probe_confidences.append(probe_confidence)
-
-        stability_weights = _snapshot_weights(
-            scores,
-            previous_scores,
-            confidence_weights=score_meta.get("parameter_confidence", {}),
-        )
-
-        progress = float(round_idx + 1) / float(total_rounds)
-
-        if cfg.gradual_sparsification:
-            schedule = _cosine_progress(progress)
-            stability_gate = 0.5 + 0.5 * max(0.0, min(1.0, stability))
-
-            if previous_stability is None:
-                plateau_bonus = 1.0
-            else:
-                plateau_bonus = 1.0 + 0.15 * max(0.0, stability - previous_stability)
-
-            probe_gate = max(0.25, min(1.0, probe_confidence))
-
-            round_prune_fraction = (
-                target_prune_fraction
-                * schedule
-                * stability_gate
-                * plateau_bonus
-                * probe_gate
+        if round_idx == 0:
+            mean_1, ucb_1 = dense_mean, dense_ucb
+            width_1, conf_1 = dense_width, dense_probe_conf
+        else:
+            mean_1, ucb_1, width_1, conf_1 = _estimate_scores_with_ucb(
+                working_model,
+                active_masks,
             )
-        else:
-            round_prune_fraction = target_prune_fraction
-        if round_idx == total_rounds - 1:
-            round_prune_fraction = target_prune_fraction
-        round_prune_fraction = max(0.0, min(target_prune_fraction, round_prune_fraction))
-        round_fractions.append(round_prune_fraction)
+        scaled_1 = _normalise_by_architecture(ucb_1, architecture_baseline)
 
-        candidate_masks, stats, embed_sel, hidden_sel = _build_structured_selection_masks(
+        m1, _, _, _ = _build_structured_selection_masks(
             working_model,
-            scores,
-            cfg,
-            prune_fraction=round_prune_fraction,
-            stability_weights=stability_weights,
+            scaled_1,
+            selection_cfg,
+            prune_fraction=quantile,
+            stability_weights=None,
         )
+        m1 = _cumulative(m1)
 
-        # Make pruning cumulative without hard-mutating the caller's model.
-        for name, cand in candidate_masks.items():
-            if is_prunable_parameter(name, params[name], cfg):
-                candidate_masks[name] = _intersect_and_keep_one(
-                    cand.to(device=params[name].device, dtype=torch.bool),
-                    active_masks[name],
-                    scores[name].to(device=params[name].device),
-                )
-            else:
-                candidate_masks[name] = cand.to(device=params[name].device, dtype=torch.bool)
+        damaged_model = copy.deepcopy(working_model)
+        apply_masks_(damaged_model, m1)
+        mean_2, ucb_2, width_2, conf_2 = _estimate_scores_with_ucb(
+            damaged_model,
+            m1,
+        )
+        scaled_2 = _normalise_by_architecture(ucb_2, architecture_baseline)
 
-        final_masks = candidate_masks
-        final_stats = stats
-        final_embed_sel = embed_sel
-        final_hidden_sel = hidden_sel
-        active_masks = candidate_masks
+        m2, _, _, _ = _build_structured_selection_masks(
+            damaged_model,
+            scaled_2,
+            selection_cfg,
+            prune_fraction=quantile,
+            stability_weights=None,
+        )
+        m2 = _cumulative(m2)
 
-        # Apply masks only to the working copy used for the next round's scoring.
-        apply_masks_(working_model, candidate_masks)
+        candidate = _union_rescue(m1, m2)
+        eligible, retained, achieved = _mask_prune_fraction(candidate)
+        _, m1_retained, m1_achieved = _mask_prune_fraction(m1)
+        rescue_fraction = float(max(0, retained - m1_retained) / max(1, eligible))
 
-        delta = None if previous_stability is None else abs(stability - previous_stability)
-        if (
-            round_idx + 1 >= min_rounds
-            and round_idx + 1 < total_rounds
-            and previous_stability is not None
-            and stability >= stability_stop
-            and delta is not None
-            and delta <= stability_delta_stop
-        ):
-            stable_rounds += 1
-        else:
-            stable_rounds = 0
+        # Selection score returned to downstream diagnostics: a unit is protected
+        # when either the original or damaged model assigns it high sensitivity.
+        final_scores = {
+            name: torch.maximum(scaled_1[name], scaled_2[name])
+            for name in scaled_1
+        }
+        final_masks = candidate
+        active_masks = candidate
+        apply_masks_(working_model, active_masks)
 
-        # Stop once the score landscape has plateaued for multiple consecutive rounds.
-        if round_idx + 1 >= min_rounds and round_idx + 1 < total_rounds and stable_rounds >= 2:
-            early_stop_triggered = True
+        prune_schedule.append(float(achieved))
+        rescue_schedule.append(float(rescue_fraction))
+        ucb_width_schedule.append(float(0.5 * (width_1 + width_2)))
+        probe_confidence_schedule.append(float(0.5 * (conf_1 + conf_2)))
+
+        if achieved >= target - tolerance:
+            target_reached = True
             break
 
-        previous_scores = scores
-        previous_stability = stability
+        previous_achieved = prune_schedule[-2] if len(prune_schedule) > 1 else 0.0
+        if achieved <= previous_achieved + 1e-12:
+            stall_rounds += 1
+        else:
+            stall_rounds = 0
 
-    # Apply only the final mask to the original model.
+        deficit = max(0.0, target - achieved)
+        rescue_gap = max(0.0, quantile - m1_achieved)
+        quantile = min(max_quantile, quantile + feedback * (deficit + rescue_gap))
+
+        if stall_rounds >= 2 and quantile >= max_quantile - 1e-12:
+            break
+
+    eligible, retained, achieved = _mask_prune_fraction(final_masks)
+    embed_sel, hidden_sel = _derive_structured_selections(final_masks)
     apply_masks_(model, final_masks)
 
-    final_stats["iterative_rounds_completed"] = float(len(round_fractions))
-    final_stats["gradual_sparsification"] = bool(cfg.gradual_sparsification)
-    final_stats["round_prune_fraction_schedule"] = [float(x) for x in round_fractions]
-    final_stats["round_stability_schedule"] = [float(x) for x in round_stabilities]
-    final_stats["final_round_prune_fraction"] = float(round_fractions[-1]) if round_fractions else float(target_prune_fraction)
-    final_stats["final_round_stability"] = float(round_stabilities[-1]) if round_stabilities else 1.0
-    final_stats["mean_round_stability"] = float(sum(round_stabilities) / max(1, len(round_stabilities)))
-    final_stats["cumulative_iterative_pruning"] = True
-    final_stats["early_round_schedule"] = "cosine-adaptive" if cfg.gradual_sparsification else "constant"
-    final_stats["iterative_early_stop_triggered"] = bool(early_stop_triggered)
-    final_stats["iterative_stable_rounds"] = float(stable_rounds)
-    final_stats["round_probe_confidence_schedule"] = [float(x) for x in round_probe_confidences]
-    final_stats["final_round_probe_confidence"] = float(round_probe_confidences[-1]) if round_probe_confidences else 1.0
-    return final_masks, final_stats, final_embed_sel, final_hidden_sel, final_scores
-
+    final_stats: Dict[str, float] = {
+        "eligible_parameter_count": float(eligible),
+        "retained_eligible_parameter_count": float(retained),
+        "pruned_eligible_parameter_count": float(max(0, eligible - retained)),
+        "actual_prune_fraction_eligible": float(achieved),
+        "pruning_strategy": "neurips-2026-two-pass-structured",
+        "target_prune_fraction": float(target),
+        "target_sparsity_reached": bool(target_reached),
+        "target_tolerance": float(tolerance),
+        "iterative_rounds_completed": float(len(prune_schedule)),
+        "round_quantile_schedule": [float(x) for x in quantile_schedule],
+        "round_prune_fraction_schedule": [float(x) for x in prune_schedule],
+        "round_m2_rescue_fraction_schedule": [float(x) for x in rescue_schedule],
+        "round_mean_relative_ucb_width": [float(x) for x in ucb_width_schedule],
+        "round_probe_confidence_schedule": [float(x) for x in probe_confidence_schedule],
+        "paper_probe_repeats": float(repeats),
+        "paper_confidence_alpha": float(alpha),
+        "paper_bonferroni": bool(bonferroni),
+        "paper_architecture_normalize": bool(architecture_normalize),
+        "paper_architecture_baseline": "frozen-role-mean-at-initialisation",
+        "paper_m2_combination": "retain-union-equivalent-to-prune-intersection",
+        "paper_topology_repair": "structured-unit-consistency-plus-connectivity-closure",
+        "paper_fixed_initialisation": True,
+        "paper_quantile_feedback": float(feedback),
+        "paper_max_quantile": float(max_quantile),
+        "paper_t_critical_cap": float(critical_cap),
+        "cumulative_iterative_pruning": True,
+        "stall_rounds": float(stall_rounds),
+    }
+    return final_masks, final_stats, embed_sel, hidden_sel, final_scores
 
 def masked_density_by_module(model: nn.Module, masks: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, int | float]]:
     groups: Dict[str, Dict[str, int]] = {}

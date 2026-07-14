@@ -117,6 +117,17 @@ class Config:
     min_hidden_keep_fraction: float = _env_float("MIN_HIDDEN_KEEP_FRACTION", 0.05)
     preserve_attention_heads: bool = _env_bool("PRESERVE_ATTENTION_HEADS", False)
 
+    # NeurIPS-2026 two-pass pruning controls. The replacement function also
+    # supplies these defaults when they are absent, so these fields are optional.
+    paper_probe_repeats: int = _env_int("PAPER_PROBE_REPEATS", 1)
+    paper_confidence_alpha: float = _env_float("PAPER_CONFIDENCE_ALPHA", 0.05)
+    paper_bonferroni: bool = _env_bool("PAPER_BONFERRONI", False)
+    paper_architecture_normalize: bool = _env_bool("PAPER_ARCHITECTURE_NORMALIZE", True)
+    paper_quantile_feedback: float = _env_float("PAPER_QUANTILE_FEEDBACK", 0.75)
+    paper_max_quantile: float = _env_float("PAPER_MAX_QUANTILE", 0.999999)
+    paper_target_tolerance: float = _env_float("PAPER_TARGET_TOLERANCE", 1e-3)
+    paper_t_critical_cap: float = _env_float("PAPER_T_CRITICAL_CAP", 0.0)
+
     batch_size: int = _env_int("BATCH_SIZE", 256)
     epochs: int = _env_int("EPOCHS", 100)
     lr: float = _env_float("LR", 1e-2)
@@ -169,6 +180,18 @@ class Config:
             raise ValueError("MIN_EMBED_KEEP_FRACTION must be in [0, 1].")
         if not (0.0 <= self.min_hidden_keep_fraction <= 1.0):
             raise ValueError("MIN_HIDDEN_KEEP_FRACTION must be in [0, 1].")
+        if self.paper_probe_repeats < 1:
+            raise ValueError("PAPER_PROBE_REPEATS must be at least 1.")
+        if not (0.0 < self.paper_confidence_alpha <= 0.5):
+            raise ValueError("PAPER_CONFIDENCE_ALPHA must be in (0, 0.5].")
+        if self.paper_quantile_feedback < 0.0:
+            raise ValueError("PAPER_QUANTILE_FEEDBACK must be non-negative.")
+        if not (self.prune_fraction <= self.paper_max_quantile < 1.0):
+            raise ValueError("PAPER_MAX_QUANTILE must be >= PRUNE_FRACTION and < 1.")
+        if self.paper_target_tolerance < 0.0:
+            raise ValueError("PAPER_TARGET_TOLERANCE must be non-negative.")
+        if self.paper_t_critical_cap < 0.0:
+            raise ValueError("PAPER_T_CRITICAL_CAP must be non-negative.")
         if self.image_size % self.patch_size != 0:
             raise ValueError("IMAGE_SIZE must be divisible by PATCH_SIZE.")
         self.checkpoint_interval = max(1, self.checkpoint_interval)
