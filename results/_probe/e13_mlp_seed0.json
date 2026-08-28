@@ -1,0 +1,32 @@
+[
+  {
+    "test_loss": 1.6036232330322266,
+    "test_acc": 0.4262,
+    "prune_step": 80,
+    "sparsity": 0.9,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.10285157746535109,
+    "finetune_steps": 8000,
+    "dead_layers": 0,
+    "dead_units": 0,
+    "min_keep_fraction": 0.01,
+    "min_keep_fraction_unit": 0.05,
+    "arch": "mlp",
+    "prune_frac_of_budget": 0.01
+  },
+  {
+    "test_loss": 1.1552863647460938,
+    "test_acc": 0.5868,
+    "prune_step": 80,
+    "sparsity": 0.9,
+    "criterion": "random",
+    "kept_fraction": 0.10285157746535109,
+    "finetune_steps": 8000,
+    "dead_layers": 0,
+    "dead_units": 0,
+    "min_keep_fraction": 0.01,
+    "min_keep_fraction_unit": 0.05,
+    "arch": "mlp",
+    "prune_frac_of_budget": 0.01
+  }
+]

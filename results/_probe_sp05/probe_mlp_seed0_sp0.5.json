@@ -1,0 +1,116 @@
+[
+  {
+    "test_loss": 1.137994107055664,
+    "test_acc": 0.595,
+    "prune_step": 0,
+    "sparsity": 0.5,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.5015842625170048,
+    "finetune_steps": 8000,
+    "dead_layers": 0,
+    "dead_units": 0,
+    "min_keep_fraction": 0.01,
+    "min_keep_fraction_unit": 0.05,
+    "trajectory": [
+      {
+        "finetune_step": 1000,
+        "test_loss": 1.4268251892089843,
+        "test_acc": 0.4918
+      },
+      {
+        "finetune_step": 2000,
+        "test_loss": 1.3185454467773436,
+        "test_acc": 0.523
+      },
+      {
+        "finetune_step": 3000,
+        "test_loss": 1.2796502014160156,
+        "test_acc": 0.5442
+      },
+      {
+        "finetune_step": 4000,
+        "test_loss": 1.2340938385009765,
+        "test_acc": 0.5588
+      },
+      {
+        "finetune_step": 5000,
+        "test_loss": 1.1880609252929688,
+        "test_acc": 0.5794
+      },
+      {
+        "finetune_step": 6000,
+        "test_loss": 1.155261004638672,
+        "test_acc": 0.5916
+      },
+      {
+        "finetune_step": 7000,
+        "test_loss": 1.1387191467285156,
+        "test_acc": 0.5942
+      },
+      {
+        "finetune_step": 8000,
+        "test_loss": 1.137994107055664,
+        "test_acc": 0.595
+      }
+    ],
+    "arch": "mlp",
+    "seed": 0
+  },
+  {
+    "test_loss": 1.1251874053955078,
+    "test_acc": 0.5996,
+    "prune_step": 0,
+    "sparsity": 0.5,
+    "criterion": "random",
+    "kept_fraction": 0.5015842625170048,
+    "finetune_steps": 8000,
+    "dead_layers": 0,
+    "dead_units": 0,
+    "min_keep_fraction": 0.01,
+    "min_keep_fraction_unit": 0.05,
+    "trajectory": [
+      {
+        "finetune_step": 1000,
+        "test_loss": 1.4129880523681642,
+        "test_acc": 0.4956
+      },
+      {
+        "finetune_step": 2000,
+        "test_loss": 1.3135037780761718,
+        "test_acc": 0.5252
+      },
+      {
+        "finetune_step": 3000,
+        "test_loss": 1.2528851928710938,
+        "test_acc": 0.5476
+      },
+      {
+        "finetune_step": 4000,
+        "test_loss": 1.232095706176758,
+        "test_acc": 0.5662
+      },
+      {
+        "finetune_step": 5000,
+        "test_loss": 1.1814498413085937,
+        "test_acc": 0.5836
+      },
+      {
+        "finetune_step": 6000,
+        "test_loss": 1.1464079162597656,
+        "test_acc": 0.5922
+      },
+      {
+        "finetune_step": 7000,
+        "test_loss": 1.1282429260253906,
+        "test_acc": 0.6028
+      },
+      {
+        "finetune_step": 8000,
+        "test_loss": 1.1251874053955078,
+        "test_acc": 0.5996
+      }
+    ],
+    "arch": "mlp",
+    "seed": 0
+  }
+]

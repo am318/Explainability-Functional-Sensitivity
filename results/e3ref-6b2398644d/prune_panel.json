@@ -1,0 +1,194 @@
+[
+  {
+    "test_loss": 1.2616571594238282,
+    "test_acc": 0.5472,
+    "prune_step": 0,
+    "sparsity": 0.9,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.9719790771484375,
+    "test_acc": 0.658,
+    "prune_step": 0,
+    "sparsity": 0.9,
+    "criterion": "random",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.829808723449707,
+    "test_acc": 0.7002,
+    "prune_step": 0,
+    "sparsity": 0.9,
+    "criterion": "magnitude",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 2.302587145996094,
+    "test_acc": 0.1026,
+    "prune_step": 0,
+    "sparsity": 0.99,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 2.302587145996094,
+    "test_acc": 0.1026,
+    "prune_step": 0,
+    "sparsity": 0.99,
+    "criterion": "random",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 1.3864210479736327,
+    "test_acc": 0.4898,
+    "prune_step": 0,
+    "sparsity": 0.99,
+    "criterion": "magnitude",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 1.1790765930175782,
+    "test_acc": 0.5834,
+    "prune_step": 9,
+    "sparsity": 0.9,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.9485456298828125,
+    "test_acc": 0.6646,
+    "prune_step": 9,
+    "sparsity": 0.9,
+    "criterion": "random",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.8355156768798828,
+    "test_acc": 0.7002,
+    "prune_step": 9,
+    "sparsity": 0.9,
+    "criterion": "magnitude",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 2.3025851013183596,
+    "test_acc": 0.1006,
+    "prune_step": 9,
+    "sparsity": 0.99,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 2.3026074340820313,
+    "test_acc": 0.0972,
+    "prune_step": 9,
+    "sparsity": 0.99,
+    "criterion": "random",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 1.4054543243408204,
+    "test_acc": 0.4954,
+    "prune_step": 9,
+    "sparsity": 0.99,
+    "criterion": "magnitude",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 0.8513276123046875,
+    "test_acc": 0.6926,
+    "prune_step": 400,
+    "sparsity": 0.9,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.720575880432129,
+    "test_acc": 0.7478,
+    "prune_step": 400,
+    "sparsity": 0.9,
+    "criterion": "random",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 0.7588617553710938,
+    "test_acc": 0.737,
+    "prune_step": 400,
+    "sparsity": 0.9,
+    "criterion": "magnitude",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 1.5582614196777345,
+    "test_acc": 0.3954,
+    "prune_step": 400,
+    "sparsity": 0.99,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 1.2949241119384765,
+    "test_acc": 0.5262,
+    "prune_step": 400,
+    "sparsity": 0.99,
+    "criterion": "random",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 1.3837962615966797,
+    "test_acc": 0.497,
+    "prune_step": 400,
+    "sparsity": 0.99,
+    "criterion": "magnitude",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 2.452523223876953,
+    "test_acc": 0.1368,
+    "prune_step": 8000,
+    "sparsity": 0.9,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 2.3242654052734375,
+    "test_acc": 0.1378,
+    "prune_step": 8000,
+    "sparsity": 0.9,
+    "criterion": "random",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 5.478593579101562,
+    "test_acc": 0.0988,
+    "prune_step": 8000,
+    "sparsity": 0.9,
+    "criterion": "magnitude",
+    "kept_fraction": 0.10732767163105471
+  },
+  {
+    "test_loss": 2.388149822998047,
+    "test_acc": 0.1014,
+    "prune_step": 8000,
+    "sparsity": 0.99,
+    "criterion": "sensitivity",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 2.3713945678710937,
+    "test_acc": 0.0986,
+    "prune_step": 8000,
+    "sparsity": 0.99,
+    "criterion": "random",
+    "kept_fraction": 0.018060438794160177
+  },
+  {
+    "test_loss": 4.268430163574219,
+    "test_acc": 0.099,
+    "prune_step": 8000,
+    "sparsity": 0.99,
+    "criterion": "magnitude",
+    "kept_fraction": 0.018060438794160177
+  }
+]

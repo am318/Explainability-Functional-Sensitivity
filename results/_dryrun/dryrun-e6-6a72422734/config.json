@@ -1,0 +1,72 @@
+{
+  "ckpt_first": 1,
+  "data": {
+    "augment": true,
+    "data_dir": "./data",
+    "dataset": "cifar10",
+    "download": false,
+    "image_size": 32,
+    "test_subset": 64,
+    "text_file": "",
+    "train_subset": 0,
+    "workers": 0
+  },
+  "data_seed": 1,
+  "device": "cpu",
+  "keep_scores": "none",
+  "model": {
+    "arch": "mlp",
+    "block_size": 128,
+    "depth": 4,
+    "dropout": 0.0,
+    "heads": 3,
+    "lazy_alpha": 1.0,
+    "mlp_ratio": 4.0,
+    "patch_size": 4,
+    "vocab_size": 0,
+    "width": 512
+  },
+  "n_ckpts": 2,
+  "out_dir": "results/_dryrun",
+  "save_state_at": [],
+  "seed": 0,
+  "sens": {
+    "batch_size": 2,
+    "estimator": "auto",
+    "exact_max_outputs": 32,
+    "folds": 2,
+    "impl": "auto",
+    "include": "prunable",
+    "n_probes": 2,
+    "n_samples": 4,
+    "ntk_examples": 4,
+    "prune_bias": false,
+    "prune_embeddings": false,
+    "prune_head": false,
+    "prune_norm": false,
+    "seed": 1234
+  },
+  "sparsities": [
+    0.5,
+    0.8,
+    0.9,
+    0.95,
+    0.99
+  ],
+  "tag": "dryrun-e6",
+  "track_criteria": false,
+  "track_structured": false,
+  "train": {
+    "batch_size": 8,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.0,
+    "lr": 0.001,
+    "lr_schedule": "cosine",
+    "min_lr": 1e-05,
+    "momentum": 0.9,
+    "optimizer": "adamw",
+    "steps": 2,
+    "warmup_steps": 200,
+    "weight_decay": 0.05
+  }
+}

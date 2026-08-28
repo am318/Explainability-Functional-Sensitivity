@@ -1,0 +1,70 @@
+{
+  "ckpt_first": 1,
+  "data": {
+    "augment": false,
+    "data_dir": "./data",
+    "dataset": "synthetic",
+    "download": false,
+    "image_size": 32,
+    "test_subset": 512,
+    "text_file": "",
+    "train_subset": 0,
+    "workers": 0
+  },
+  "data_seed": -1,
+  "device": "auto",
+  "keep_scores": "all",
+  "model": {
+    "arch": "mlp",
+    "block_size": 128,
+    "depth": 3,
+    "dropout": 0.0,
+    "heads": 3,
+    "lazy_alpha": 1.0,
+    "mlp_ratio": 4.0,
+    "patch_size": 4,
+    "vocab_size": 0,
+    "width": 128
+  },
+  "n_ckpts": 6,
+  "out_dir": "results/_smoke",
+  "save_state_at": [],
+  "seed": 0,
+  "sens": {
+    "batch_size": 16,
+    "estimator": "auto",
+    "exact_max_outputs": 32,
+    "folds": 2,
+    "impl": "auto",
+    "include": "prunable",
+    "n_probes": 8,
+    "n_samples": 64,
+    "ntk_examples": 16,
+    "prune_bias": false,
+    "prune_embeddings": false,
+    "prune_head": false,
+    "prune_norm": false,
+    "seed": 1234
+  },
+  "sparsities": [
+    0.5,
+    0.9,
+    0.99
+  ],
+  "tag": "smoke-mlp",
+  "track_criteria": true,
+  "track_structured": true,
+  "train": {
+    "batch_size": 64,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.0,
+    "lr": 0.001,
+    "lr_schedule": "cosine",
+    "min_lr": 1e-05,
+    "momentum": 0.9,
+    "optimizer": "adamw",
+    "steps": 60,
+    "warmup_steps": 10,
+    "weight_decay": 0.05
+  }
+}

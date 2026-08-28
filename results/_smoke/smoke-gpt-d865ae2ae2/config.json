@@ -1,0 +1,66 @@
+{
+  "ckpt_first": 1,
+  "data": {
+    "augment": true,
+    "data_dir": "./data",
+    "dataset": "text",
+    "download": false,
+    "image_size": 32,
+    "test_subset": 2000,
+    "text_file": "/tmp/claude-501/-Users-alan-Documents-Github-Explainability-Functional-Sensitivity/d83623c4-a9b4-41c6-8df6-14f631da53ed/scratchpad/corpus.txt",
+    "train_subset": 0,
+    "workers": 0
+  },
+  "device": "auto",
+  "keep_scores": "all",
+  "model": {
+    "arch": "gpt",
+    "block_size": 64,
+    "depth": 3,
+    "dropout": 0.0,
+    "heads": 3,
+    "lazy_alpha": 1.0,
+    "mlp_ratio": 4.0,
+    "patch_size": 4,
+    "vocab_size": 100,
+    "width": 96
+  },
+  "n_ckpts": 5,
+  "out_dir": "results/_smoke",
+  "save_state_at": [],
+  "seed": 0,
+  "sens": {
+    "batch_size": 4,
+    "estimator": "hutchinson",
+    "exact_max_outputs": 32,
+    "folds": 2,
+    "impl": "auto",
+    "include": "prunable",
+    "n_probes": 4,
+    "n_samples": 32,
+    "ntk_examples": 8,
+    "prune_bias": false,
+    "prune_embeddings": false,
+    "prune_head": false,
+    "prune_norm": false,
+    "seed": 1234
+  },
+  "sparsities": [
+    0.5,
+    0.9
+  ],
+  "tag": "smoke-gpt",
+  "train": {
+    "batch_size": 16,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.0,
+    "lr": 0.001,
+    "lr_schedule": "cosine",
+    "min_lr": 1e-05,
+    "momentum": 0.9,
+    "optimizer": "adamw",
+    "steps": 40,
+    "warmup_steps": 5,
+    "weight_decay": 0.05
+  }
+}

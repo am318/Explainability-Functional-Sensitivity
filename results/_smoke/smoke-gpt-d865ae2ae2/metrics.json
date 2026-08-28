@@ -1,0 +1,764 @@
+{
+  "config": {
+    "ckpt_first": 1,
+    "data": {
+      "augment": true,
+      "data_dir": "./data",
+      "dataset": "text",
+      "download": false,
+      "image_size": 32,
+      "test_subset": 2000,
+      "text_file": "/tmp/claude-501/-Users-alan-Documents-Github-Explainability-Functional-Sensitivity/d83623c4-a9b4-41c6-8df6-14f631da53ed/scratchpad/corpus.txt",
+      "train_subset": 0,
+      "workers": 0
+    },
+    "device": "auto",
+    "keep_scores": "all",
+    "model": {
+      "arch": "gpt",
+      "block_size": 64,
+      "depth": 3,
+      "dropout": 0.0,
+      "heads": 3,
+      "lazy_alpha": 1.0,
+      "mlp_ratio": 4.0,
+      "patch_size": 4,
+      "vocab_size": 100,
+      "width": 96
+    },
+    "n_ckpts": 5,
+    "out_dir": "results/_smoke",
+    "save_state_at": [],
+    "seed": 0,
+    "sens": {
+      "batch_size": 4,
+      "estimator": "hutchinson",
+      "exact_max_outputs": 32,
+      "folds": 2,
+      "impl": "auto",
+      "include": "prunable",
+      "n_probes": 4,
+      "n_samples": 32,
+      "ntk_examples": 8,
+      "prune_bias": false,
+      "prune_embeddings": false,
+      "prune_head": false,
+      "prune_norm": false,
+      "seed": 1234
+    },
+    "sparsities": [
+      0.5,
+      0.9
+    ],
+    "tag": "smoke-gpt",
+    "train": {
+      "batch_size": 16,
+      "grad_clip": 1.0,
+      "label_smoothing": 0.0,
+      "lr": 0.001,
+      "lr_schedule": "cosine",
+      "min_lr": 1e-05,
+      "momentum": 0.9,
+      "optimizer": "adamw",
+      "steps": 40,
+      "warmup_steps": 5,
+      "weight_decay": 0.05
+    }
+  },
+  "consecutive": [
+    {
+      "prev_step": 0,
+      "spearman": 0.9357945065385403,
+      "step": 1,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.6885463987995011,
+          "budget_distance": 0.02073688271604937,
+          "chance_global": 0.5,
+          "chance_layer": 0.6752242244538184,
+          "jaccard": 0.8162787132940635,
+          "overlap": 0.8988474151234568
+        },
+        "0.9": {
+          "adjusted": 0.7542692219450202,
+          "budget_distance": 0.11070588944481288,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.18642004717242766,
+          "jaccard": 0.6667755143050915,
+          "overlap": 0.8000783651817469
+        }
+      },
+      "within_layer": {
+        "median": 0.8756379513451996,
+        "min": 0.5877717461529366,
+        "n_layers": 12,
+        "weighted": 0.8899949438812992
+      }
+    },
+    {
+      "prev_step": 1,
+      "spearman": 0.8224187408530138,
+      "step": 3,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.4904469385078493,
+          "budget_distance": 0.06922140239197533,
+          "chance_global": 0.5,
+          "chance_layer": 0.6389748548665547,
+          "jaccard": 0.689244163845116,
+          "overlap": 0.8160385320216049
+        },
+        "0.9": {
+          "adjusted": 0.4352473882814231,
+          "budget_distance": 0.36445837603231057,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.12244851399230483,
+          "jaccard": 0.3372564035388243,
+          "overlap": 0.504400506359636
+        }
+      },
+      "within_layer": {
+        "median": 0.6473086306586209,
+        "min": 0.47449400492514215,
+        "n_layers": 12,
+        "weighted": 0.7192606375844538
+      }
+    },
+    {
+      "prev_step": 3,
+      "spearman": 0.7407139583231988,
+      "step": 12,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.41344231728565334,
+          "budget_distance": 0.03436656057098766,
+          "chance_global": 0.5,
+          "chance_layer": 0.6172261328036566,
+          "jaccard": 0.6332944425573392,
+          "overlap": 0.7754810474537037
+        },
+        "0.9": {
+          "adjusted": 0.25433754492234745,
+          "budget_distance": 0.41795768280185663,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.1291690392681284,
+          "jaccard": 0.21260187858630897,
+          "overlap": 0.3506540478630418
+        }
+      },
+      "within_layer": {
+        "median": 0.43518336563887944,
+        "min": 0.23665550560203347,
+        "n_layers": 12,
+        "weighted": 0.5181399344872983
+      }
+    },
+    {
+      "prev_step": 12,
+      "spearman": 0.8993434658001954,
+      "step": 40,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.604422492451125,
+          "budget_distance": 0.03792317708333334,
+          "chance_global": 0.5,
+          "chance_layer": 0.6309597117202053,
+          "jaccard": 0.745225007232845,
+          "overlap": 0.8540159625771605
+        },
+        "0.9": {
+          "adjusted": 0.5342872968225502,
+          "budget_distance": 0.11929591898245824,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.27113476513225243,
+          "jaccard": 0.4931593159315932,
+          "overlap": 0.6605582012176744
+        }
+      },
+      "within_layer": {
+        "median": 0.6911230765608107,
+        "min": 0.5649327884250889,
+        "n_layers": 12,
+        "weighted": 0.7513187796643741
+      }
+    }
+  ],
+  "device": "mps",
+  "final_eval": {
+    "test_acc": 0.205419921875,
+    "test_loss": 3.3442053318023683,
+    "test_ppl": 28.338048934936523
+  },
+  "laziness": [
+    {
+      "kernel_alignment_to_final": 0.9751023650169373,
+      "kernel_velocity_to_final": 0.2231483906507492,
+      "step": 0
+    },
+    {
+      "kernel_alignment_to_final": 0.9767928719520569,
+      "kernel_velocity_step": 0.03351804241538048,
+      "kernel_velocity_to_final": 0.21543964743614197,
+      "step": 1
+    },
+    {
+      "kernel_alignment_to_final": 0.9642549753189087,
+      "kernel_velocity_step": 0.10713477432727814,
+      "kernel_velocity_to_final": 0.26737669110298157,
+      "step": 3
+    },
+    {
+      "kernel_alignment_to_final": 0.9705382585525513,
+      "kernel_velocity_step": 0.2060547173023224,
+      "kernel_velocity_to_final": 0.242742121219635,
+      "step": 12
+    },
+    {
+      "kernel_alignment_to_final": 1.0,
+      "kernel_velocity_step": 0.242742121219635,
+      "kernel_velocity_to_final": 0.0,
+      "step": 40
+    }
+  ],
+  "n_params": 361056,
+  "n_prunable": 331776,
+  "noise_floor": [
+    {
+      "kendall": 0.8005493284911444,
+      "spearman": 0.9395945086294297,
+      "step": 0,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.6706448172084103,
+          "budget_distance": 0.00842134452160495,
+          "chance_global": 0.5,
+          "chance_layer": 0.6756721490259088,
+          "jaccard": 0.8069800880135942,
+          "overlap": 0.8931809413580247
+        },
+        "0.9": {
+          "adjusted": 0.6780084467373156,
+          "budget_distance": 0.016848514075592264,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.20677977730172256,
+          "jaccard": 0.5931047728800538,
+          "overlap": 0.7445897884140092
+        }
+      },
+      "within_layer": {
+        "median": 0.8212641186530452,
+        "min": 0.7939147618063792,
+        "n_layers": 12,
+        "weighted": 0.839734572289944
+      }
+    },
+    {
+      "kendall": 0.812376394747967,
+      "spearman": 0.9463293893955737,
+      "step": 1,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.7006420792302391,
+          "budget_distance": 0.009976610725308635,
+          "chance_global": 0.5,
+          "chance_layer": 0.6631486479092473,
+          "jaccard": 0.8167958995925877,
+          "overlap": 0.8991608796296297
+        },
+        "0.9": {
+          "adjusted": 0.6967099158782518,
+          "budget_distance": 0.01916932907348244,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.1699923956836776,
+          "jaccard": 0.5977847339272815,
+          "overlap": 0.7482669238652119
+        }
+      },
+      "within_layer": {
+        "median": 0.8475414649250352,
+        "min": 0.7913759349928396,
+        "n_layers": 12,
+        "weighted": 0.8601048162002257
+      }
+    },
+    {
+      "kendall": 0.8712739391915475,
+      "spearman": 0.9736692796531454,
+      "step": 3,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.811529984043366,
+          "budget_distance": 0.0032672646604938356,
+          "chance_global": 0.5,
+          "chance_layer": 0.6166309621926034,
+          "jaccard": 0.865230444022173,
+          "overlap": 0.9277464313271605
+        },
+        "0.9": {
+          "adjusted": 0.8188229468045639,
+          "budget_distance": 0.01507022725902707,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.14973855504977848,
+          "jaccard": 0.7330303742589256,
+          "overlap": 0.8459521369582254
+        }
+      },
+      "within_layer": {
+        "median": 0.9492495448091016,
+        "min": 0.8314132342350309,
+        "n_layers": 12,
+        "weighted": 0.9299241881061184
+      }
+    },
+    {
+      "kendall": 0.86807420843339,
+      "spearman": 0.9732849194863009,
+      "step": 12,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.8035430574087095,
+          "budget_distance": 0.01719835069444443,
+          "chance_global": 0.5,
+          "chance_layer": 0.6157085634989449,
+          "jaccard": 0.8596058561083335,
+          "overlap": 0.9245032793209876
+        },
+        "0.9": {
+          "adjusted": 0.7647986642899667,
+          "budget_distance": 0.08472481765025017,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.23611297172384071,
+          "jaccard": 0.6953933416796546,
+          "overlap": 0.8203327506178794
+        }
+      },
+      "within_layer": {
+        "median": 0.926559802214691,
+        "min": 0.8852995614804504,
+        "n_layers": 12,
+        "weighted": 0.937836309580588
+      }
+    },
+    {
+      "kendall": 0.8821667336233505,
+      "spearman": 0.978273031135204,
+      "step": 40,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.8163706178247843,
+          "budget_distance": 0.008071711033950624,
+          "chance_global": 0.5,
+          "chance_layer": 0.6449664626210915,
+          "jaccard": 0.8775912123733044,
+          "overlap": 0.9348054108796297
+        },
+        "0.9": {
+          "adjusted": 0.7713793371700364,
+          "budget_distance": 0.02326843088793778,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.30271891449920524,
+          "jaccard": 0.7250110484311227,
+          "overlap": 0.8405871360540117
+        }
+      },
+      "within_layer": {
+        "median": 0.9254219482210881,
+        "min": 0.8942502971567524,
+        "n_layers": 12,
+        "weighted": 0.9365187246133145
+      }
+    }
+  ],
+  "run_id": "smoke-gpt-d865ae2ae2",
+  "sparsities": [
+    0.5,
+    0.9
+  ],
+  "spectrum_final": {
+    "hill_alpha": 2.09271480205411,
+    "log_quantiles": [
+      -4.383307308854268,
+      -2.969860471112794,
+      -0.9790537716484902,
+      -0.5150098411068057,
+      -0.12485088851732051,
+      0.21116232588716227,
+      0.898411675932578,
+      1.3670446054307546
+    ]
+  },
+  "steps": [
+    0,
+    1,
+    3,
+    12,
+    40
+  ],
+  "theory": [
+    {
+      "amplitude_drift": {
+        "l2": 1101.2714261181973,
+        "max": 13.124303105974608,
+        "mean": 1.5844323624402956,
+        "median": 1.5813926154743945,
+        "quantile": 4.766851066568243,
+        "quantile_level": 0.99
+      },
+      "bound_overlap_0.5": 0.0,
+      "bound_overlap_0.9": 0.0,
+      "drift_sigma": 0.703903507909072,
+      "gap_0.5": {
+        "cut_value": 0.7034016496200909,
+        "density_at_cut": 348371.86056377273,
+        "gap": 4.632692907180491e-06,
+        "gap_over_spread": 0.041898924391243694,
+        "local_spread": 0.00011056830156118903
+      },
+      "gap_0.9": {
+        "cut_value": 1.1485274589716896,
+        "density_at_cut": 171419.10642608695,
+        "gap": 6.8257179224318065e-06,
+        "gap_over_spread": 0.031193694262038246,
+        "local_spread": 0.0002188172348261582
+      },
+      "hill_alpha": 2.7562851999763205,
+      "obs_overlap_0.5": 0.7535747010030864,
+      "obs_overlap_0.9": 0.36111278558080656,
+      "pred_overlap_0.5": 0.7967303240740741,
+      "pred_overlap_0.9": 0.4895412622822352,
+      "step": 0,
+      "weight_distance_from_init": {
+        "l2": 0.0,
+        "relative": 0.0
+      },
+      "weight_distance_to_final": {
+        "l2": 3.591099739074707,
+        "relative": 0.12464002743341654
+      }
+    },
+    {
+      "amplitude_drift": {
+        "l2": 900.7961431958003,
+        "max": 10.410121082871512,
+        "mean": 1.2815327578966393,
+        "median": 1.267710136041856,
+        "quantile": 3.9736402774175756,
+        "quantile_level": 0.99
+      },
+      "bound_overlap_0.5": 0.0,
+      "bound_overlap_0.9": 0.0,
+      "drift_sigma": 0.6842501271155852,
+      "gap_0.5": {
+        "cut_value": 0.5768731334385714,
+        "density_at_cut": 328661.587335206,
+        "gap": 7.1322240546845e-07,
+        "gap_over_spread": 0.0060765280306156015,
+        "local_spread": 0.00011737334245394648
+      },
+      "gap_0.9": {
+        "cut_value": 1.029383653819624,
+        "density_at_cut": 186349.72093544103,
+        "gap": 4.374026145725907e-06,
+        "gap_over_spread": 0.021356341186655626,
+        "local_spread": 0.00020481158769176196
+      },
+      "hill_alpha": 2.857406457044193,
+      "obs_overlap_0.5": 0.7718279803240741,
+      "obs_overlap_0.9": 0.36032913376333714,
+      "pred_overlap_0.5": 0.7993103780864198,
+      "pred_overlap_0.9": 0.496654409548496,
+      "step": 1,
+      "weight_distance_from_init": {
+        "l2": 0.11937455832958221,
+        "relative": 0.004182300073981025
+      },
+      "weight_distance_to_final": {
+        "l2": 3.5317678451538086,
+        "relative": 0.12258073378431204
+      }
+    },
+    {
+      "amplitude_drift": {
+        "l2": 390.7897608792006,
+        "max": 7.396435520399095,
+        "mean": 0.43406830275901354,
+        "median": 0.2700018097970569,
+        "quantile": 2.468874123611302,
+        "quantile_level": 0.99
+      },
+      "bound_overlap_0.5": 0.0,
+      "bound_overlap_0.9": 0.0,
+      "drift_sigma": 0.8344849967872966,
+      "gap_0.5": {
+        "cut_value": -0.0955266333397448,
+        "density_at_cut": 237389.46611478203,
+        "gap": 1.2901840991119684e-06,
+        "gap_over_spread": 0.009251452428331615,
+        "local_spread": 0.00013945746455561002
+      },
+      "gap_0.9": {
+        "cut_value": 0.4952070598227188,
+        "density_at_cut": 98704.71852578211,
+        "gap": 7.415988935721707e-06,
+        "gap_over_spread": 0.019283711058088387,
+        "local_spread": 0.00038457270560539406
+      },
+      "hill_alpha": 3.249365419524041,
+      "obs_overlap_0.5": 0.7679880401234568,
+      "obs_overlap_0.9": 0.2841340647416963,
+      "pred_overlap_0.5": 0.7765902295524691,
+      "pred_overlap_0.9": 0.43830248960154317,
+      "step": 3,
+      "weight_distance_from_init": {
+        "l2": 0.5255703330039978,
+        "relative": 0.01841341131111136
+      },
+      "weight_distance_to_final": {
+        "l2": 3.2257492542266846,
+        "relative": 0.11195942879707713
+      }
+    },
+    {
+      "amplitude_drift": {
+        "l2": 174.80939557224127,
+        "max": 6.053800773529312,
+        "mean": 0.1735461627594581,
+        "median": 0.0963340135089118,
+        "quantile": 1.1734456206864354,
+        "quantile_level": 0.99
+      },
+      "bound_overlap_0.5": 0.0,
+      "bound_overlap_0.9": 0.0,
+      "drift_sigma": 0.4634329904015231,
+      "gap_0.5": {
+        "cut_value": -0.5272316670069634,
+        "density_at_cut": 233699.20765149212,
+        "gap": 4.22707481528839e-06,
+        "gap_over_spread": 0.0264523797197885,
+        "local_spread": 0.0001597994154048151
+      },
+      "gap_0.9": {
+        "cut_value": 0.20589449839407942,
+        "density_at_cut": 100776.63590846077,
+        "gap": 1.488844470753925e-05,
+        "gap_over_spread": 0.04084580667522571,
+        "local_spread": 0.00036450362765315565
+      },
+      "hill_alpha": 1.703322726985202,
+      "obs_overlap_0.5": 0.8540159625771605,
+      "obs_overlap_0.9": 0.6605582012176744,
+      "pred_overlap_0.5": 0.8453414351851852,
+      "pred_overlap_0.9": 0.6110675748990295,
+      "step": 12,
+      "weight_distance_from_init": {
+        "l2": 2.4656288623809814,
+        "relative": 0.08638356378312406
+      },
+      "weight_distance_to_final": {
+        "l2": 1.6389837265014648,
+        "relative": 0.05688591002117418
+      }
+    },
+    {
+      "amplitude_drift": {
+        "l2": 0.0,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "quantile": 0.0,
+        "quantile_level": 0.99
+      },
+      "bound_overlap_0.5": 0.9999939718364198,
+      "bound_overlap_0.9": 0.9999698595454819,
+      "drift_sigma": 0.0,
+      "gap_0.5": {
+        "cut_value": -0.5150067058293437,
+        "density_at_cut": 198616.47627507255,
+        "gap": 6.2705549239705505e-06,
+        "gap_over_spread": 0.03373906856297661,
+        "local_spread": 0.0001858544171800733
+      },
+      "gap_0.9": {
+        "cut_value": 0.21116235772415845,
+        "density_at_cut": 124566.76239425146,
+        "gap": 6.367399232876103e-08,
+        "gap_over_spread": 0.00020703797509269884,
+        "local_spread": 0.00030754740670281257
+      },
+      "hill_alpha": 2.09271480205411,
+      "obs_overlap_0.5": 1.0,
+      "obs_overlap_0.9": 1.0,
+      "pred_overlap_0.5": 1.0,
+      "pred_overlap_0.9": 1.0,
+      "step": 40,
+      "weight_distance_from_init": {
+        "l2": 3.591099739074707,
+        "relative": 0.12581455307201345
+      },
+      "weight_distance_to_final": {
+        "l2": 0.0,
+        "relative": 0.0
+      }
+    }
+  ],
+  "train_seconds": 11.651255130767822,
+  "tstar": {
+    "sp0.5_ceiling": 0.8910716648630749,
+    "sp0.5_crossing": 40,
+    "sp0.5_final_adjusted": 0.604422492451125,
+    "sp0.5_tau0.8": 40,
+    "sp0.5_tau0.9": 40,
+    "sp0.5_tau0.95": 40,
+    "sp0.9_ceiling": 0.8667262501557581,
+    "sp0.9_crossing": 40,
+    "sp0.9_final_adjusted": 0.5342872968225502,
+    "sp0.9_tau0.8": 40,
+    "sp0.9_tau0.9": 40,
+    "sp0.9_tau0.95": 40
+  },
+  "vs_final": [
+    {
+      "kendall": 0.544192354548307,
+      "spearman": 0.7217752224706513,
+      "step": 0,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.27588997986435204,
+          "budget_distance": 0.05884693287037038,
+          "chance_global": 0.5,
+          "chance_layer": 0.6596852796612999,
+          "jaccard": 0.6045887399826858,
+          "overlap": 0.7535747010030864
+        },
+        "0.9": {
+          "adjusted": 0.1741084534328565,
+          "budget_distance": 0.23669298933027913,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.22642722634133047,
+          "jaccard": 0.22034022988505747,
+          "overlap": 0.36111278558080656
+        }
+      },
+      "within_layer": {
+        "median": 0.19027876661596302,
+        "min": 0.002989845845521731,
+        "n_layers": 12,
+        "weighted": 0.3298902583105176
+      }
+    },
+    {
+      "spearman": 0.7430168819784709,
+      "step": 1,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.3369885093320724,
+          "budget_distance": 0.042974778163580245,
+          "chance_global": 0.5,
+          "chance_layer": 0.6558551052470266,
+          "jaccard": 0.6284363818414737,
+          "overlap": 0.7718279803240741
+        },
+        "0.9": {
+          "adjusted": 0.19557013316170654,
+          "budget_distance": 0.2353065284224486,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.20481462386422117,
+          "jaccard": 0.21975698976121763,
+          "overlap": 0.36032913376333714
+        }
+      },
+      "within_layer": {
+        "median": 0.2885499689320909,
+        "min": 0.05097066897206309,
+        "n_layers": 12,
+        "weighted": 0.38972536225426746
+      }
+    },
+    {
+      "spearman": 0.7174791484927848,
+      "step": 3,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.37288357376116327,
+          "budget_distance": 0.042365933641975315,
+          "chance_global": 0.5,
+          "chance_layer": 0.630033674499571,
+          "jaccard": 0.623360864289349,
+          "overlap": 0.7679880401234568
+        },
+        "0.9": {
+          "adjusted": 0.1875434721652962,
+          "budget_distance": 0.5229670263427573,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.11888709028386517,
+          "jaccard": 0.16559222891672082,
+          "overlap": 0.2841340647416963
+        }
+      },
+      "within_layer": {
+        "median": 0.3719711297889771,
+        "min": 0.1944198725815858,
+        "n_layers": 12,
+        "weighted": 0.4587970031659706
+      }
+    },
+    {
+      "kendall": 0.7356466557239526,
+      "spearman": 0.8993434658001954,
+      "step": 12,
+      "topk": {
+        "0.5": {
+          "adjusted": 0.604422492451125,
+          "budget_distance": 0.03792317708333334,
+          "chance_global": 0.5,
+          "chance_layer": 0.6309597117202053,
+          "jaccard": 0.745225007232845,
+          "overlap": 0.8540159625771605
+        },
+        "0.9": {
+          "adjusted": 0.5342872968225502,
+          "budget_distance": 0.11929591898245824,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.27113476513225243,
+          "jaccard": 0.4931593159315932,
+          "overlap": 0.6605582012176744
+        }
+      },
+      "within_layer": {
+        "median": 0.6911230765608107,
+        "min": 0.5649327884250889,
+        "n_layers": 12,
+        "weighted": 0.7513187796643741
+      }
+    },
+    {
+      "kendall": 1.0,
+      "spearman": 1.0,
+      "step": 40,
+      "topk": {
+        "0.5": {
+          "adjusted": 1.0,
+          "budget_distance": 0.0,
+          "chance_global": 0.5,
+          "chance_layer": 0.6476111822494591,
+          "jaccard": 1.0,
+          "overlap": 1.0
+        },
+        "0.9": {
+          "adjusted": 1.0,
+          "budget_distance": 0.0,
+          "chance_global": 0.10000120563271606,
+          "chance_layer": 0.30929186868445846,
+          "jaccard": 1.0,
+          "overlap": 1.0
+        }
+      },
+      "within_layer": {
+        "median": 1.0,
+        "min": 0.9999999999999999,
+        "n_layers": 12,
+        "weighted": 1.0
+      }
+    }
+  ]
+}
