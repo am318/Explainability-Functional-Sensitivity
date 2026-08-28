@@ -6,3 +6,17 @@ Pruning_diagnostics/__pycache__
 logs
 Plots
 Pruning_diagnostics/data
+
+# Experiment outputs: the figures under outputs/ are committed, so results
+# can be read straight from the repo. The heavy artifacts that produced them
+# are not -- re-run the relevant sweep.py to regenerate checkpoints and the
+# cached full-resolution sensitivity scores.
+*.pt
+*.npz
+mnist_cnn/data/
+*.log
+
+# SLURM job scripts and their logs: specific to one cluster, so they stay
+# local rather than being shared with everyone using this codebase.
+*.sbatch
+slurm-*.out

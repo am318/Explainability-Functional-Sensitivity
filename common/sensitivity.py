@@ -65,7 +65,7 @@ directly, or a tuple/list whose first element is the output tensor (e.g. an
 RNN returning (output, hidden_state)) -- either form works unchanged.
 """
 
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -99,15 +99,20 @@ def compute_sensitivity(
     device: torch.device,
     n_probes: int = 4,
     show_progress: bool = False,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    include_signed: bool = True,
+) -> Tuple[Dict[str, torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
     """Estimate per-parameter unsigned S_i and signed Sbar_i over `loader`.
 
     `loader` should yield (inputs, targets) batches; only inputs are used,
     since F_theta(x) does not depend on the targets.
+
+    `include_signed=False` skips the signed score entirely (one fewer
+    backward pass per batch) and returns None in its place, for experiments
+    that only care about S_i.
     """
     model.eval()
     unsigned = zeros_like_params(model)
-    signed = zeros_like_params(model)
+    signed = zeros_like_params(model) if include_signed else None
     n_accum = 0
 
     batches = tqdm(loader, desc="sensitivity", leave=False, disable=not show_progress)
@@ -122,15 +127,16 @@ def compute_sensitivity(
         bsz = inputs.shape[0]
 
         # Signed: exact gradient of the summed output, no probe needed.
-        model.zero_grad(set_to_none=True)
-        output = _model_output(model, inputs)
-        scalar = output.sum() / bsz
-        scalar.backward()
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                if p.grad is None:
-                    continue
-                signed[name].add_(p.grad.detach().float().cpu(), alpha=bsz)
+        if signed is not None:
+            model.zero_grad(set_to_none=True)
+            output = _model_output(model, inputs)
+            scalar = output.sum() / bsz
+            scalar.backward()
+            with torch.no_grad():
+                for name, p in model.named_parameters():
+                    if p.grad is None:
+                        continue
+                    signed[name].add_(p.grad.detach().float().cpu(), alpha=bsz)
 
         # Unsigned: Hutchinson/Rademacher estimate of E[||dF/dtheta_i||^2].
         # No probe normalisation, no batch_size division on the scalar: the
@@ -157,7 +163,8 @@ def compute_sensitivity(
 
     for name in unsigned:
         unsigned[name].div_(n_accum * n_probes)
-        signed[name].div_(n_accum)
+        if signed is not None:
+            signed[name].div_(n_accum)
 
     model.zero_grad(set_to_none=True)
     return unsigned, signed

@@ -1,9 +1,14 @@
 """Loss / sensitivity plots, shared across experiments. Group names (e.g.
 embedding/lstm/head for CharLSTM, input/hidden/output for MLP) are derived
-from the data rather than hardcoded, so this works for any model."""
+from the data rather than hardcoded, so this works for any model.
+
+Which sensitivity scores are drawn is likewise data-driven: every function
+taking a `kinds` argument (or an optional signed matrix) will draw only the
+unsigned score if that is all the experiment tracked, and both if it tracked
+both -- see BaseConfig.track_signed."""
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -18,6 +23,50 @@ except Exception:
     _MATPLOTLIB_AVAILABLE = False
 
 _PALETTE = ["tab:blue", "tab:green", "tab:red", "tab:purple", "tab:brown", "tab:pink", "tab:olive", "tab:cyan"]
+
+TRAIN_COLOR = "black"
+VAL_COLOR = "tab:red"
+
+# Per-score-kind axis styling, so every figure that draws a sensitivity
+# panel labels and scales it the same way. Unsigned S_i is non-negative and
+# spans orders of magnitude (log); signed Sbar_i straddles zero (linear,
+# with a zero line for reference).
+KIND_STYLE = {
+    "unsigned": {
+        "ylabel": r"$\sum_i S_i(\theta)$ (unsigned)",
+        "title": "Unsigned sensitivity: " r"$S_i = \mathbb{E}_x[\|\partial F(x)/\partial\theta_i\|_2^2]$",
+        "log": True,
+        "zero_line": False,
+    },
+    "signed": {
+        "ylabel": r"$\sum_i \bar S_i(\theta)$ (signed)",
+        "title": r"Signed sensitivity: $\bar S_i = \mathbb{E}_x[\sum_y \partial F(x)_y/\partial\theta_i]$",
+        "log": False,
+        "zero_line": True,
+    },
+}
+
+
+def plot_loss_panel(ax, history: List[Dict[str, float]], legend: bool = True) -> None:
+    """Training loss (and validation loss, if the run recorded any) against
+    epoch, on a log y-axis. Shared by every figure that puts a loss panel
+    above something else, so the loss always looks the same.
+
+    Runs predating validation tracking (e.g. shakespeare_lstm) simply have no
+    `val_loss` key and get the single-curve version they had before."""
+    epochs = [h["epoch"] for h in history]
+    ax.plot(epochs, [h["loss"] for h in history], color=TRAIN_COLOR, label="train")
+    val_rows = [h for h in history if "val_loss" in h]
+    if val_rows:
+        ax.plot([h["epoch"] for h in val_rows], [h["val_loss"] for h in val_rows],
+                color=VAL_COLOR, label="test")
+        ax.set_title("Train vs. test loss")
+        if legend:
+            ax.legend(fontsize=8)
+    else:
+        ax.set_title("Training loss")
+    ax.set_ylabel("Loss")
+    ax.set_yscale("log")
 
 
 def _groups_from_history(rows: List[Dict[str, float]], prefix: str) -> List[str]:
@@ -35,7 +84,14 @@ def _group_colors(groups: List[str]) -> Dict[str, str]:
     return {group: _PALETTE[i % len(_PALETTE)] for i, group in enumerate(groups)}
 
 
-def plot_training_history(history: List[Dict[str, float]], out_path: Path) -> None:
+def plot_training_history(
+    history: List[Dict[str, float]],
+    out_path: Path,
+    kinds: Sequence[str] = ("unsigned", "signed"),
+) -> None:
+    """Loss on top, then one summed-sensitivity panel per tracked kind, all
+    sharing an epoch axis. `kinds` defaults to both scores; an experiment
+    that only tracked S_i passes ("unsigned",) and gets a two-panel figure."""
     if not _MATPLOTLIB_AVAILABLE or not history:
         return
 
@@ -43,48 +99,40 @@ def plot_training_history(history: List[Dict[str, float]], out_path: Path) -> No
     if not rows:
         return
 
+    kinds = [k for k in kinds if any(f"{k}_total" in h for h in rows)]
+    if not kinds:
+        return
+
     groups = _groups_from_history(rows, "unsigned_")
     colors = _group_colors(groups)
-
-    epochs = [h["epoch"] for h in history]
     sens_epochs = [h["epoch"] for h in rows]
 
-    fig, (ax_loss, ax_unsigned, ax_signed) = plt.subplots(
-        3, 1, figsize=(8.0, 10.0), sharex=True, constrained_layout=True
+    fig, axes = plt.subplots(
+        1 + len(kinds), 1, figsize=(8.0, 3.3 * (1 + len(kinds))), sharex=True, constrained_layout=True
     )
+    axes = np.atleast_1d(axes)
 
-    ax_loss.plot(epochs, [h["loss"] for h in history], color="black")
-    ax_loss.set_ylabel("Train loss")
-    ax_loss.set_title("Training loss")
-    ax_loss.set_yscale("log")
+    plot_loss_panel(axes[0], history)
 
-    ax_unsigned.plot(sens_epochs, [h["unsigned_total"] for h in rows], color="black", label="total")
-    for group in groups:
-        key = f"unsigned_{group}"
-        if any(key in h for h in rows):
-            ax_unsigned.plot(
-                sens_epochs, [h.get(key, float("nan")) for h in rows],
-                color=colors[group], linestyle="--", label=group,
-            )
-    ax_unsigned.set_ylabel(r"$\sum_i S_i(\theta)$ (unsigned)")
-    ax_unsigned.set_title("Unsigned sensitivity: " r"$S_i = \mathbb{E}_x[\|\partial F(x)/\partial\theta_i\|_2^2]$")
-    ax_unsigned.set_yscale("log")
-    ax_unsigned.legend(fontsize=8)
+    for ax, kind in zip(axes[1:], kinds):
+        style = KIND_STYLE[kind]
+        ax.plot(sens_epochs, [h[f"{kind}_total"] for h in rows], color="black", label="total")
+        for group in groups:
+            key = f"{kind}_{group}"
+            if any(key in h for h in rows):
+                ax.plot(
+                    sens_epochs, [h.get(key, float("nan")) for h in rows],
+                    color=colors[group], linestyle="--", label=group,
+                )
+        if style["zero_line"]:
+            ax.axhline(0.0, color="gray", linewidth=0.8)
+        if style["log"]:
+            ax.set_yscale("log")
+        ax.set_ylabel(style["ylabel"])
+        ax.set_title(style["title"])
+        ax.legend(fontsize=8)
 
-    ax_signed.plot(sens_epochs, [h["signed_total"] for h in rows], color="black", label="total")
-    for group in groups:
-        key = f"signed_{group}"
-        if any(key in h for h in rows):
-            ax_signed.plot(
-                sens_epochs, [h.get(key, float("nan")) for h in rows],
-                color=colors[group], linestyle="--", label=group,
-            )
-    ax_signed.axhline(0.0, color="gray", linewidth=0.8)
-    ax_signed.set_ylabel(r"$\sum_i \bar S_i(\theta)$ (signed)")
-    ax_signed.set_title(r"Signed sensitivity: $\bar S_i = \mathbb{E}_x[\sum_y \partial F(x)_y/\partial\theta_i]$")
-    ax_signed.set_xlabel("Epoch")
-    ax_signed.legend(fontsize=8)
-
+    axes[-1].set_xlabel("Epoch")
     fig.savefig(out_path)
     plt.close(fig)
 
@@ -115,7 +163,7 @@ def _epoch_bin_edges(epochs: List[int]) -> np.ndarray:
 def plot_sensitivity_heatmap(
     history: List[Dict[str, float]],
     unsigned_matrix: np.ndarray,
-    signed_matrix: np.ndarray,
+    signed_matrix: Optional[np.ndarray],
     heatmap_epochs: List[int],
     boundaries: List[Tuple[str, int]],
     n_rows: int,
@@ -123,30 +171,28 @@ def plot_sensitivity_heatmap(
 ) -> None:
     """Parameter-wise sensitivity over training: x=epoch, y=parameter index
     (pooled/binned and ordered by module), colour=sensitivity value -- with
-    the training loss plotted above on the *same* (real-valued) epoch axis,
-    so the two can be compared directly rather than just index-aligned.
+    the loss plotted above on the *same* (real-valued) epoch axis, so the two
+    can be compared directly rather than just index-aligned.
 
     `boundaries` gives the (module_name, first_row) of each module's block
     in the pooled row ordering, used to label the y-axis by module.
+    `signed_matrix` may be None, for runs that only tracked S_i.
     """
     if not _MATPLOTLIB_AVAILABLE or unsigned_matrix.size == 0 or not history:
         return
 
-    loss_epochs = [h["epoch"] for h in history]
-    loss_values = [h["loss"] for h in history]
     x_edges = _epoch_bin_edges(heatmap_epochs)
     y_edges = np.arange(n_rows + 1)
+    n_maps = 1 if signed_matrix is None else 2
 
-    fig, (ax_loss, ax_u, ax_s) = plt.subplots(
-        3, 1, figsize=(10.0, 12.0), sharex=True,
-        gridspec_kw={"height_ratios": [1.0, 2.2, 2.2]},
+    fig, axes = plt.subplots(
+        1 + n_maps, 1, figsize=(10.0, 4.0 + 4.0 * n_maps), sharex=True,
+        gridspec_kw={"height_ratios": [1.0] + [2.2] * n_maps},
         constrained_layout=True,
     )
+    ax_loss, ax_u = axes[0], axes[1]
 
-    ax_loss.plot(loss_epochs, loss_values, color="black")
-    ax_loss.set_ylabel("Train loss")
-    ax_loss.set_title("Training loss")
-    ax_loss.set_yscale("log")
+    plot_loss_panel(ax_loss, history)
     ax_loss.set_xlim(x_edges[0], x_edges[-1])
 
     positive = unsigned_matrix[unsigned_matrix > 0]
@@ -161,19 +207,92 @@ def plot_sensitivity_heatmap(
     _apply_group_yticks(ax_u, boundaries, n_rows)
     fig.colorbar(im_u, ax=ax_u, pad=0.02).set_label(r"$S_i(\theta)$")
 
-    signed_absmax = float(np.abs(signed_matrix).max()) if signed_matrix.size else 1.0
-    im_s = ax_s.pcolormesh(
-        x_edges, y_edges, signed_matrix,
-        cmap="RdBu_r",
-        norm=SymLogNorm(linthresh=max(signed_absmax * 1e-3, 1e-12), vmin=-signed_absmax, vmax=signed_absmax),
-    )
-    ax_s.invert_yaxis()
-    ax_s.set_title(r"Signed sensitivity $\bar S_i(\theta)$")
-    ax_s.set_xlabel("Epoch")
-    _apply_group_yticks(ax_s, boundaries, n_rows)
-    fig.colorbar(im_s, ax=ax_s, pad=0.02).set_label(r"$\bar S_i(\theta)$")
+    if signed_matrix is not None:
+        ax_s = axes[2]
+        signed_absmax = float(np.abs(signed_matrix).max()) if signed_matrix.size else 1.0
+        im_s = ax_s.pcolormesh(
+            x_edges, y_edges, signed_matrix,
+            cmap="RdBu_r",
+            norm=SymLogNorm(linthresh=max(signed_absmax * 1e-3, 1e-12), vmin=-signed_absmax, vmax=signed_absmax),
+        )
+        ax_s.invert_yaxis()
+        ax_s.set_title(r"Signed sensitivity $\bar S_i(\theta)$")
+        _apply_group_yticks(ax_s, boundaries, n_rows)
+        fig.colorbar(im_s, ax=ax_s, pad=0.02).set_label(r"$\bar S_i(\theta)$")
 
+    axes[-1].set_xlabel("Epoch")
     fig.suptitle("Loss vs. parameter-wise sensitivity over training (rows pooled by module)")
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _finite(values: List[float]) -> np.ndarray:
+    """Replace inf/NaN with NaN so matplotlib breaks the line rather than
+    blowing up the axis limits -- diverging learning rates are expected in a
+    sweep and should not squash every other curve into a flat line."""
+    arr = np.asarray(values, dtype=float)
+    return np.where(np.isfinite(arr), arr, np.nan)
+
+
+def plot_lr_sweep(
+    sweep_runs: Dict[str, List[Tuple[float, List[Dict[str, float]]]]],
+    best: Dict[str, float],
+    out_path: Path,
+    labels: Optional[Dict[str, str]] = None,
+    title: str = "Learning-rate sweep",
+) -> None:
+    """One panel per optimizer, one colour per learning rate, dashed=train /
+    solid=test. The selected learning rate is drawn thicker.
+
+    The y-limit is set from the *first* epoch's losses rather than from the
+    data's true maximum, so a learning rate that diverges runs off the top of
+    the panel instead of compressing every other curve into a flat line.
+    """
+    if not _MATPLOTLIB_AVAILABLE or not sweep_runs:
+        return
+    labels = labels or {}
+    optimizers = list(sweep_runs)
+
+    fig, axes = plt.subplots(
+        1, len(optimizers), figsize=(5.0 * len(optimizers), 4.6), sharey=True, constrained_layout=True
+    )
+    axes = np.atleast_1d(axes)
+
+    lo, hi = np.inf, -np.inf
+    for _, runs in sweep_runs.items():
+        for _, history in runs:
+            values = _finite([h["loss"] for h in history] + [h.get("val_loss", np.nan) for h in history])
+            first = _finite([history[0]["loss"], history[0].get("val_loss", np.nan)])
+            if np.any(np.isfinite(values)):
+                lo = min(lo, float(np.nanmin(values)))
+            if np.any(np.isfinite(first)):
+                hi = max(hi, float(np.nanmax(first)))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = None, None
+
+    cmap = plt.get_cmap("viridis")
+    for ax, optimizer in zip(axes, optimizers):
+        runs = sorted(sweep_runs[optimizer], key=lambda item: item[0])
+        n_lr = max(1, len(runs) - 1)
+        for i, (lr, history) in enumerate(runs):
+            color = cmap(0.85 * i / n_lr)
+            is_best = best.get(optimizer) == lr
+            width = 2.4 if is_best else 1.1
+            epochs = [h["epoch"] for h in history]
+            ax.plot(epochs, _finite([h["loss"] for h in history]),
+                    color=color, linewidth=width, linestyle="--", alpha=0.75)
+            ax.plot(epochs, _finite([h.get("val_loss", np.nan) for h in history]),
+                    color=color, linewidth=width,
+                    label=f"lr={lr:g}" + (" (best)" if is_best else ""))
+        ax.set_yscale("log")
+        if lo is not None:
+            ax.set_ylim(lo * 0.8, hi * 1.5)
+        ax.set_xlabel("Epoch")
+        ax.set_title(labels.get(optimizer, optimizer))
+        ax.legend(fontsize=8)
+
+    axes[0].set_ylabel("Loss")
+    fig.suptitle(f"{title} (dashed = train, solid = test)")
     fig.savefig(out_path)
     plt.close(fig)
 
