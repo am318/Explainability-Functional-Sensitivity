@@ -1,0 +1,2379 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2026
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+\usepackage{neurips_2026}
+% the "default" option is equal to the "main" option, which is used for the Main Track with double-blind reviewing.
+% 1. "main" option is used for the Main Track
+%  \usepackage[main]{neurips_2026}
+% 2. "position" option is used for the Position Paper Track
+%  \usepackage[position]{neurips_2026}
+% 3. "eandd" option is used for the Evaluations & Datasets Track
+ % \usepackage[eandd]{neurips_2026}
+% 4. "creativeai" option is used for the Creative AI Track
+%  \usepackage[creativeai]{neurips_2026}
+% 5. "sglblindworkshop" option is used for the Workshop with single-blind reviewing
+ % \usepackage[sglblindworkshop]{neurips_2026}
+% 6. "dblblindworkshop" option is used for the Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop]{neurips_2026}
+
+% After being accepted, the authors should add "final" behind the track to compile a camera-ready version.
+% 1. Main Track
+ % \usepackage[main, final]{neurips_2026}
+% 2. Position Paper Track
+%  \usepackage[position, final]{neurips_2026}
+% 3. Evaluations & Datasets Track
+ % \usepackage[eandd, final]{neurips_2026}
+% 4. Creative AI Track
+%  \usepackage[creativeai, final]{neurips_2026}
+% 5. Workshop with single-blind reviewing
+%  \usepackage[sglblindworkshop, final]{neurips_2026}
+% 6. Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop, final]{neurips_2026}
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote.
+% For workshops (5., 6.), the authors should add the name of the workshop, "\workshoptitle" command is used to set the workshop title.
+% \workshoptitle{WORKSHOP TITLE}
+
+% "preprint" option is used for arXiv or other preprint submissions
+ % \usepackage[preprint]{neurips_2026}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2026}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{amssymb}        % \lesssim, \preceq etc.
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colours
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+
+\usepackage{amsthm}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote. 
+\title{Pruning Early in Training via Parameter-Wise Functional Sensitivity}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{
+  Alan Muriithi \\
+  Mathematical Institute \\
+  University of Oxford \\
+  Oxford, UK \\
+  \texttt{muriithi@maths.ox.ac.uk}
+  \And
+  Vedanta Thapar \\
+  Mathematical Institute \\
+  University of Oxford \\
+  Oxford, UK \\
+  \texttt{vedanta.thapar@maths.ox.ac.uk}
+  \And
+  Hugh Blayney \\
+  Department of Engineering\\
+  University of Oxford \\
+  Oxford, UK \\
+  \texttt{hugh.blayney@eng.ox.ac.uk}
+}
+
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+Modern deep neural networks are typically over-parameterised, yet many
+parameters contribute little to the learned function~\cite{denil2013predicting,
+blalock2020state}. Post-training pruning can remove a large fraction of them
+with minimal loss increase~\cite{han2015learning}, but it requires training the
+full dense model first, which forfeits most of the computational benefit
+pruning is intended to deliver. Pruning at initialisation avoids that cost, but
+saliency measured at initialisation is a weak predictor of final parameter
+importance~\cite{frankle2021missing, su2020sanity}. We take an intermediate
+position: we prune \emph{early in training}, at a prune time $t_p$ chosen so
+that the pruning criterion has stabilised but the dense-training cost incurred
+is a small fraction of the full budget. Our criterion is \emph{parameter-wise
+functional sensitivity}, the expected squared response of the network function
+to an infinitesimal perturbation of a single parameter. It is label-free and
+loss-free, and it is defined at any point along the training trajectory, so the
+same machinery specialises to pruning at initialisation by setting $t_p=0$. We
+relate this quantity to the neural tangent kernel and to Fisher information,
+bound the functional damage caused by pruning at $\theta^{(t_p)}$ rather than at
+convergence, and introduce a normalisation by expected architectural sensitivity
+that separates functional importance from sensitivity induced by architecture
+and parameterisation. We develop a confidence-certified pruning algorithm based
+on this criterion and evaluate it against pruning-at-initialisation baselines
+(SNIP~\cite{lee2019snip}, SynFlow~\cite{tanaka2020synflow},
+NTK-SAP~\cite{wang2023ntksap}) and against cost-matched early-pruning
+baselines at equal total training budget.
+\end{abstract}
+
+\section{Introduction}
+
+Modern deep learning has achieved remarkable success through increasingly large
+and over-parameterised models, with performance improving predictably according
+to empirically validated scaling laws~\cite{kaplan2020scaling,
+hoffmann2022chinchilla}. At the same time, substantial evidence indicates that
+many parameters in these models are functionally redundant and can be removed
+after training~\cite{denil2013predicting, han2015learning, blalock2020state}.
+The Lottery Ticket Hypothesis~\cite{frankle2019lottery} showed that randomly
+initialised dense networks contain sparse subnetworks capable of matching the
+full model when trained in isolation, but reliably identifying such subnetworks
+\emph{at initialisation} remains difficult~\cite{frankle2021missing,
+su2020sanity}.
+
+Post-training pruning~\cite{lecun1990obd, hassibi1993obs, han2015learning}
+removes a large fraction of parameters with little degradation in predictive
+performance, but requires first training an over-parameterised model. Pruning
+at initialisation~\cite{lee2019snip, wang2020grasp, tanaka2020synflow,
+wang2023ntksap} avoids that cost entirely, but a weight that appears
+unimportant at initialisation may become crucial after representation
+learning~\cite{frankle2020earlyphase}, and controlled comparisons find that
+existing at-initialisation criteria are largely insensitive to which individual
+weights they select within a layer~\cite{frankle2021missing, su2020sanity}.
+Useful structure emerges \emph{during} training rather than existing fully at
+initialisation, which explains why initialisation saliency is a weak predictor
+of final importance.
+
+\paragraph{Pruning has a cost-optimal time.} These two extremes bracket a
+choice that is rarely made explicitly: \emph{when} to prune. Let $T$ be the
+total number of training steps, $C_{\mathrm{dense}}$ and $C_{\mathrm{sparse}}$
+the per-step cost of a dense and a pruned step, and $C_{\mathrm{crit}}$ the
+one-off cost of evaluating the pruning criterion. Pruning at step $t_p$ costs
+\begin{equation}
+    \mathcal C(t_p)
+    =
+    t_p\,C_{\mathrm{dense}}
+    +
+    C_{\mathrm{crit}}
+    +
+    (T-t_p)\,C_{\mathrm{sparse}},
+    \label{eq:budget}
+\end{equation}
+against $T\,C_{\mathrm{dense}}$ for dense training. Pruning at initialisation
+($t_p=0$) minimises Equation~\eqref{eq:budget} but maximises criterion error;
+post-training pruning ($t_p=T$) does the reverse. The useful regime is
+$t_p \ll T$: if the criterion stabilises after a short initial phase, then
+pruning at that point recovers most of the accuracy of pruning at convergence
+while paying only a small fraction of the dense budget.
+
+In this work we prune early in training using \emph{parameter-wise functional
+sensitivity}, a label-free, loss-free measure of the influence of an individual
+parameter on the realised network function. The quantity is defined at any
+$\theta$, so the same theory and algorithm apply along the whole trajectory; we
+treat the prune time $t_p$ as an explicit hyperparameter and recover
+pruning at initialisation as the special case $t_p=0$. The criterion also
+subsumes several established ones:
+Proposition~\ref{prop:containment} shows that Fisher pruning, squared-Taylor
+importance and Optimal Brain Damage are each recovered from the same
+per-parameter derivative by a choice of output-space weighting and a power of
+the parameter magnitude~\cite{lecun1990obd, theis2018fisher,
+molchanov2019importance}. What distinguishes the criterion we use is that it
+removes both weightings, leaving a measure of parameter importance that is
+defined in function space rather than loss space and requires no labels.
+We study the criterion in
+dense multi-layer perceptrons, convolutional networks and transformer
+architectures, bound the excess functional damage incurred by pruning at
+$\theta^{(t_p)}$ rather than at convergence, and evaluate the resulting
+algorithm against at-initialisation baselines and against cost-matched early
+pruning baselines at equal total budget.
+
+\paragraph{Prune-time convention.} Throughout, $\theta^{(t)}$ denotes the
+parameter vector after $t$ optimisation steps and $t_p$ the prune time. All
+results in Sections~\ref{sec:sensitivity}--\ref{sec:normalisation} are stated
+at a generic parameter vector $\theta$ and therefore hold at any $t_p$,
+including $t_p=0$; we write $\theta^{(t_p)}$ only where the dependence on the
+prune time is material.
+
+\subsection{Contributions}
+
+Our contributions are as follows.
+\begin{itemize}
+    \item We formulate parameter-wise functional sensitivity as a
+    parameter-coordinate seminorm of the parameter-to-function map, and identify
+    it with the diagonal of the parameter-space Gram matrix dual to the
+    empirical neural tangent kernel.
+    \item We relate this quantity to the Fisher information, which is the same
+    seminorm weighted by the loss and likelihood geometry. Removing that
+    weighting yields a label-free notion of parameter importance that is
+    well defined before the task loss has been meaningfully reduced.
+    \item We bound the excess functional damage incurred by pruning at an
+    early prune time $t_p$ rather than at convergence, in terms of the top-$k$
+    rank overlap between the sensitivity orderings at $t_p$ and at $T$ and the
+    local gap density of the sensitivity spectrum, both of which are directly
+    measurable.
+    \item We introduce a normalisation by expected architectural sensitivity,
+    separating functional importance from sensitivity induced by architecture
+    and parameterisation, and show that it is non-degenerate precisely when
+    $t_p>0$.
+    \item We derive confidence-certified pruning and topology-preserving repair
+    procedures, giving a family-wise guarantee that every removed parameter
+    lies below the current pruning frontier with confidence $1-\alpha$.
+    \item We evaluate the resulting algorithm at equal total training budget
+    against at-initialisation baselines (SNIP, SynFlow, NTK-SAP) and against
+    cost-matched early-pruning baselines (magnitude, SNIP and Fisher pruning
+    applied at $t_p$), and report wall-clock and FLOP cost alongside accuracy.
+\end{itemize}
+
+\section{Neural Network Functional Sensitivity}
+\label{sec:sensitivity}
+
+% Also want to show that the sensitivity distribution does not change
+
+Consider a parametrised map
+\[
+    F_\theta:\mathcal X\to\mathbb R^{d_y},
+    \qquad
+    \theta=(\theta_1,\ldots,\theta_p)\in\mathbb R^p,
+\]
+and let \(\mu_{\mathcal X}\) denote the input distribution of interest, or its empirical counterpart on a dataset. The pointwise functional sensitivity of parameter \(\theta_i\) at input \(x\in\mathcal X\) is defined as
+\begin{equation}
+    s_i(x;\theta)
+    :=
+    \frac{\partial F_\theta(x)}{\partial \theta_i}
+    \in \mathbb R^{d_y}.
+\end{equation}
+We define the parameter-wise functional sensitivity score by the squared \(L^2(\mu_{\mathcal X})\)-norm
+\begin{equation}
+    S_i(\theta)
+    :=
+    \mathbb E_{x\sim\mu_{\mathcal X}}
+    \left[
+        \left\|s_i(x;\theta)\right\|_2^2
+    \right].
+    \label{eq:functional-sensitivity-score}
+\end{equation}
+Equivalently, \(S_i(\theta)\) is the coordinate-wise squared norm of the Fréchet derivative of the parameter-to-function map
+\begin{equation}
+    \theta \mapsto F_\theta
+    \in L^2(\mu_{\mathcal X};\mathbb R^{d_y}).
+\end{equation}
+Thus \(S_i(\theta)\) measures the local first-order change in the network $F_\theta$ caused by perturbing parameter \(\theta_i\). This is analogous to a Sobolev-type seminorm, but differs from a standard Sobolev seminorm because differentiation is taken with respect to parameter coordinates rather than input coordinates, and because the score is evaluated parameter-wise rather than as a full seminorm over the parameter space.
+
+For a dataset \(\mathcal D=\{x_k\}_{k=1}^n\), the empirical sensitivity score is
+\begin{equation}
+    \widehat S_i(\theta)
+    :=
+    \frac1n
+    \sum_{k=1}^n
+    \left\|
+        \frac{\partial F_\theta(x_k)}{\partial\theta_i}
+    \right\|_2^2.
+\end{equation}
+Let \(J_\theta(x_k)\in\mathbb R^{d_y\times p}\) denote the Jacobian of the network output with respect to parameters, and let
+\[
+    G_\theta
+    =
+    \begin{bmatrix}
+        J_\theta(x_1)\\
+        \vdots\\
+        J_\theta(x_n)
+    \end{bmatrix}
+    \in\mathbb R^{nd_y\times p}
+\]
+be the empirical Jacobian feature matrix. The parameter-space Gram matrix of functional sensitivities is then
+\begin{equation}
+    Q_\theta
+    :=
+    \frac1n
+    G_\theta^\top G_\theta
+    \in\mathbb R^{p\times p}.
+    \label{eq:parameter-gram}
+\end{equation}
+Its diagonal entries are precisely the empirical parameter-wise sensitivities:
+\begin{equation}
+    (Q_\theta)_{ii}
+    =
+    \widehat S_i(\theta).
+\end{equation}
+The off-diagonal entries measure correlations between the functional effects of different parameters. Therefore, while \(S_i(\theta)\) gives a marginal parameter-wise score, \(Q_\theta\) captures the local geometry induced in function space by parameter perturbations.
+
+This construction is closely related to the neural tangent kernel (NTK)~\cite{Jacot_2018}. The empirical NTK is the output-space Gram matrix
+\begin{equation}
+    K_\theta
+    :=
+    \frac1n
+    G_\theta G_\theta^\top
+    \in\mathbb R^{nd_y\times nd_y}.
+\end{equation}
+Thus \(Q_\theta\) and \(K_\theta\) are dual Gram matrices built from the same Jacobian features: \(K_\theta\) compares sensitivities across inputs and output coordinates, whereas \(Q_\theta\) compares the functional roles of parameters. In particular,
+\begin{equation}
+    \operatorname{tr}(K_\theta)
+    =
+    \operatorname{tr}(Q_\theta)
+    =
+    \frac1n
+    \sum_{k=1}^n
+    \left\|J_\theta(x_k)\right\|_F^2
+    =
+    \sum_{i=1}^p
+    \widehat S_i(\theta).
+    \label{eq:ntk-trace-sensitivity}
+\end{equation}
+Functional sensitivity therefore decomposes the NTK trace into parameter-wise contributions. This should not be interpreted as a global measure of model capacity, but rather as a local first-order measure of how strongly the realised function responds to infinitesimal parameter perturbations under the chosen input distribution.
+
+Under the standard linearised NTK approximation~\cite{Jacot_2018, lee2019wide, chizat2019lazy}, gradient flow on the squared loss evolves according to
+\begin{equation}
+    \dot{\mathbf e}(t)
+    =
+    -
+    K_\theta
+    \mathbf e(t),
+\end{equation}
+where \(\mathbf e(t)\) is the vector of prediction errors on the training set, with outputs stacked across examples if \(d_y>1\). If
+\begin{equation}
+    K_\theta
+    =
+    U\Lambda U^\top,
+    \qquad
+    \Lambda
+    =
+    \operatorname{diag}(\lambda_1,\ldots,\lambda_{nd_y}),
+\end{equation}
+then
+\begin{equation}
+    \mathbf e(t)
+    =
+    \sum_j
+    e^{-\lambda_j t}
+    \left(\mathbf u_j^\top \mathbf e(0)\right)
+    \mathbf u_j.
+\end{equation}
+Hence the NTK eigenvalues determine the convergence rates of the corresponding function-space modes in the linearised dynamics. Large eigenvalues correspond to rapidly learned modes, small eigenvalues to slowly learned modes, and zero eigenvalues to modes that are not learned under the fixed-kernel approximation. Equation~\eqref{eq:ntk-trace-sensitivity} connects these dynamics to functional sensitivity by showing how the total local Jacobian energy is distributed across parameters.
+
+Functional sensitivity is also related to Fisher information. Suppose the network output \(F_\theta(x)\) parametrises a predictive distribution \(p_\theta(y\mid x)\). The Fisher information matrix is
+\begin{equation}
+    \mathcal I(\theta)
+    =
+    \mathbb E_{x\sim\mu_{\mathcal X},\,y\sim p_\theta(\cdot\mid x)}
+    \left[
+        \nabla_\theta \log p_\theta(y\mid x)
+        \nabla_\theta \log p_\theta(y\mid x)^\top
+    \right].
+\end{equation}
+By the chain rule,
+\begin{equation}
+    \frac{\partial}{\partial\theta_i}
+    \log p_\theta(y\mid x)
+    =
+    \left(
+        \nabla_f \log p_\theta(y\mid x)
+    \right)^\top
+    \frac{\partial F_\theta(x)}{\partial\theta_i}.
+\end{equation}
+Consequently, the diagonal Fisher entries can be written as
+\begin{equation}
+    \mathcal I_{ii}(\theta)
+    =
+    \mathbb E_x
+    \left[
+        s_i(x;\theta)^\top
+        H_\theta(x)
+        s_i(x;\theta)
+    \right],
+    \label{eq:fisher-sensitivity}
+\end{equation}
+where
+\begin{equation}
+    H_\theta(x)
+    :=
+    \mathbb E_{y\sim p_\theta(\cdot\mid x)}
+    \left[
+        \nabla_f \log p_\theta(y\mid x)
+        \nabla_f \log p_\theta(y\mid x)^\top
+    \right]
+\end{equation}
+is the Fisher information matrix in the output space of the model. Comparing
+Equation~\eqref{eq:fisher-sensitivity} with
+Equation~\eqref{eq:functional-sensitivity-score} shows that Fisher information
+is functional sensitivity with the identity replaced by an output-space metric
+determined by the likelihood. This observation generalises: several established
+saliency criteria are obtained from $s_i$ by choosing an output-space weighting
+and a power of the parameter magnitude, and nothing else. We make this precise.
+
+\begin{definition}[Weighted saliency family]
+\label{def:weighted-family}
+For a measurable field of positive semi-definite matrices
+$H:\mathcal X\to\mathbb R^{d_y\times d_y}$ and an exponent
+$\gamma\in\{0,1\}$, define
+\begin{equation}
+    W_i(\theta;H,\gamma)
+    :=
+    \theta_i^{2\gamma}\;
+    \mathbb E_{x\sim\mu_{\mathcal X}}
+    \left[
+        s_i(x;\theta)^\top H(x)\, s_i(x;\theta)
+    \right].
+    \label{eq:weighted-family}
+\end{equation}
+We call $H$ the \emph{output weighting} and $\gamma$ the \emph{magnitude
+exponent}. Write $H\equiv I$ for the identity weighting, $H^{F}_\theta$ for the
+output-space Fisher metric of Equation~\eqref{eq:fisher-sensitivity}, and
+$\widehat H_\theta(x):=\nabla_f\ell(F_\theta(x),y(x))\,
+\nabla_f\ell(F_\theta(x),y(x))^\top$ for its \emph{empirical} counterpart, in
+which the model-sampled label is replaced by the observed label $y(x)$.
+\end{definition}
+
+\begin{proposition}[Containment of weight-scaled saliency criteria]
+\label{prop:containment}
+The following identities hold pointwise in $\theta$.
+\begin{enumerate}
+\item[(i)] $W_i(\theta;I,0)=S_i(\theta)$, the functional sensitivity score.
+\item[(ii)] $W_i(\theta;H^{F}_\theta,0)=\mathcal I_{ii}(\theta)$, the diagonal
+Fisher score used in Fisher pruning~\cite{theis2018fisher}.
+\item[(iii)] $W_i(\theta;I,1)=\theta_i^2S_i(\theta)=P_i(\theta)$, the
+first-order removal score of
+Equation~\eqref{eq:pruning-perturbation}.
+\item[(iv)] $W_i(\theta;H^{F}_\theta,1)=\theta_i^2\,\mathcal I_{ii}(\theta)$,
+which is twice the Optimal Brain Damage score
+$\tfrac12 H_{ii}\theta_i^2$ evaluated under the Gauss--Newton approximation
+$H_{ii}\approx\mathcal I_{ii}$~\cite{lecun1990obd}.
+\item[(v)] $W_i(\theta;\widehat H_\theta,1)
+=\theta_i^2\,\mathbb E_x\bigl[(\partial\ell/\partial\theta_i)^2\bigr]$, the
+squared-Taylor importance score~\cite{molchanov2019importance}.
+\item[(vi)] For homoscedastic Gaussian regression with fixed variance
+$\sigma^2$ one has $H^{F}_\theta\equiv\sigma^{-2}I$, hence
+$\mathcal I_{ii}(\theta)=\sigma^{-2}S_i(\theta)$; in this case (i) and (ii)
+coincide up to the constant $\sigma^{-2}$, as do (iii) and (iv), and $P_i$ is
+proportional to the Optimal Brain Damage score.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+(i) and (iii) are Equation~\eqref{eq:functional-sensitivity-score} and the
+definition of $P_i$ substituted into
+Equation~\eqref{eq:weighted-family}. (ii) is
+Equation~\eqref{eq:fisher-sensitivity}, and (iv) follows from (ii) by
+multiplying by $\theta_i^2$. For (v), $\widehat H_\theta$ is rank one, so
+\[
+s_i^\top\widehat H_\theta s_i
+=
+\bigl(\nabla_f\ell^\top s_i\bigr)^2
+=
+\left(\frac{\partial\ell}{\partial\theta_i}\right)^{\!2}
+\]
+by the chain rule; taking expectations and multiplying by $\theta_i^2$ gives the
+claim. For (vi), $\log p_\theta(y\mid x)
+=-\|y-F_\theta(x)\|^2/(2\sigma^2)+\text{const}$, so
+$\nabla_f\log p_\theta=(y-F_\theta(x))/\sigma^2$ and
+$H^{F}_\theta
+=\mathbb E_{y}\bigl[(y-F_\theta(x))(y-F_\theta(x))^\top\bigr]/\sigma^4
+=\sigma^{-2}I$. Substituting into
+Equation~\eqref{eq:fisher-sensitivity} gives
+$\mathcal I_{ii}=\sigma^{-2}S_i$.
+\end{proof}
+
+Proposition~\ref{prop:containment} organises these criteria along two
+independent axes: the output weighting $H$, which introduces dependence on the
+task loss and on labels, and the magnitude exponent $\gamma$, which introduces
+dependence on the current parameter scale. Functional sensitivity is the unique
+member of the family with \emph{neither} weighting, $H\equiv I$ and $\gamma=0$.
+This is the sense in which it is the architecture- and function-centric member
+of a family whose other members are task- and magnitude-dependent, and it is
+why the criterion is well defined before the task loss has been meaningfully
+reduced. For classification with a soft-max likelihood the weighting $H^F$
+depends on the predicted class probabilities, so functional sensitivity is not
+in general proportional to Fisher information outside the Gaussian case of
+Proposition~\ref{prop:containment}(vi).
+
+\begin{remark}[Criteria outside the family]
+\label{rem:outside-family}
+Two well-known criteria are not members of
+Definition~\ref{def:weighted-family}. SNIP~\cite{lee2019snip} scores
+$|\theta_i\,\partial L/\partial\theta_i|$ using the gradient of the \emph{mean}
+loss, which is a first-order rather than quadratic form in $s_i$; it uses the
+same ingredients as (v) but is the absolute value of a mean rather than a mean
+of squares, and the two induce the same ranking only when the gradient is
+evaluated from a single sample. SynFlow~\cite{tanaka2020synflow} replaces the
+network by a positively-homogeneous surrogate on absolute-valued weights and is
+therefore not a weighting of $s_i$ at all. We report both as baselines.
+\end{remark}
+
+The Fisher metric defines a Riemannian metric on the statistical model manifold:
+\begin{equation}
+    ds^2
+    =
+    d\theta^\top
+    \mathcal I(\theta)
+    d\theta.
+\end{equation}
+Small \(\mathcal I_{ii}(\theta)\) implies that infinitesimal changes in parameter \(\theta_i\), holding other coordinates fixed, produce little change in the predictive distribution. Small \(S_i(\theta)\), by contrast, implies that such changes produce little change in the raw network function under the chosen input measure. Thus Fisher-based pruning and functional-sensitivity pruning are related but not identical: the former is task- and likelihood-dependent, while the latter is defined directly in function space.
+
+A first-order Taylor expansion of the network function gives the local perturbation relation
+\begin{equation}
+    F_{\theta+\delta}(x)
+    =
+    F_\theta(x)
+    +
+    J_\theta(x)\delta
+    +
+    R_2(x,\delta),
+\end{equation}
+where \(R_2(x,\delta)=O(\|\delta\|_2^2)\) under local smoothness of the parameter-to-function map. If parameter \(i\) is removed by setting it to zero, then
+\[
+    \delta=-\theta_i e_i,
+\]
+
+where $ e_i = (0,\ldots,0,1,0,\ldots,0)^T $
+is the \(i\)-th standard basis vector. Thus, \(\delta\) changes only the \(i\)-th parameter by \(-\theta_i\), leaving all other parameters unchanged. It therefore follows that
+\begin{equation}
+    F_{\theta-\theta_i e_i}(x)-F_\theta(x)
+    =
+    -\theta_i s_i(x;\theta)
+    +
+    R_2(x,-\theta_i e_i).
+\end{equation}
+Averaging over \(x\) gives the first-order approximation
+\begin{equation}
+    \mathbb E_x
+    \left[
+        \left\|
+            F_{\theta-\theta_i e_i}(x)-F_\theta(x)
+        \right\|_2^2
+    \right]
+    =
+    \theta_i^2 S_i(\theta)
+    +
+    O(|\theta_i|^3),
+    \label{eq:pruning-perturbation}
+\end{equation}
+assuming sufficient local regularity. Accordingly, if the objective is to estimate the first-order functional change of pruning, a natural score is
+\begin{equation}
+    P_i(\theta)
+    :=
+    \theta_i^2 S_i(\theta).
+\end{equation}
+This can be viewed as complementary to the unweighted score \(S_i(\theta)\) which instead measures the intrinsic local responsiveness of the network function to infinitesimal perturbations in coordinate \(i\), independently of the current magnitude of that coordinate.
+
+Functional sensitivity therefore provides a loss-metric-independent view of parameter importance that aims to preserve local function-space geometry. Fisher information can be interpreted as a likelihood-weighted specialisation of this idea, whereas raw functional sensitivity is architecture- and input-distribution-dependent rather than task-loss-dependent. This distinction is useful when comparing parameters across training or when studying how training redistributes the network's local functional degrees of freedom.
+
+Parameter-wise functional sensitivity is generally not invariant under reparameterisations of the parameter space. For example, suppose a model is parameterised by \(w\), and consider the invertible change of variables
+\[
+u = g(w),
+\]
+where \(g\) is a differentiable bijection. The realised function remains unchanged, since
+\[
+f(x,w)=f\!\left(x,g^{-1}(u)\right),
+\]
+but the corresponding parameter sensitivity transforms according to the chain rule,
+\[
+\frac{\partial f}{\partial u}
+=
+\frac{\partial f}{\partial w}
+\frac{\partial w}{\partial u}.
+\]
+Hence, unless \(\partial w/\partial u = 1\), the numerical value of the sensitivity changes despite the represented function being identical. Consequently, unscaled parameter-wise sensitivity should be interpreted as a property of a particular parametrisation rather than as an intrinsic invariant of the realised function.
+
+% Different downstream tasks could have different fisher matrices? is there any consistency here after training?
+
+% This should give stronger guarantees, more insight or more efficiency than existing sota pruning with equal or better performance
+
+\paragraph{Perturbation of the NTK trace under pruning.}
+
+Let \(A\subseteq[p]\) denote the active parameter set and let
+\(S\subseteq A\) be the parameters removed at a pruning step.
+Write \(B=A\setminus S\).
+For a mask \(A\), let \(G_{\theta,A}\) denote the empirical Jacobian obtained by
+retaining only the columns indexed by \(A\), and define
+\[
+K_{\theta,A}
+=
+\frac1nG_{\theta,A}G_{\theta,A}^{\top},
+\qquad
+T_A(\theta)
+=
+\operatorname{tr}(K_{\theta,A})
+=
+\sum_{i\in A}\widehat S_i(\theta).
+\]
+
+The following theorem characterises the change in NTK trace under
+linearised pruning, where the Jacobian is held fixed after removing
+parameters.
+
+\begin{proposition}[Exact NTK trace perturbation under linearised pruning]
+\label{thm:exact_ntk_trace}
+
+Suppose pruning is performed in the linearised NTK regime.
+Then
+\[
+T_A(\theta)-T_B(\theta)
+=
+\sum_{i\in S}\widehat S_i(\theta).
+\]
+
+Consequently, pruning the parameters with the smallest empirical
+sensitivities minimises the first-order decrease in the NTK trace among
+all subsets of the same cardinality.
+
+\end{proposition}
+
+Thus, in the linearised regime, the total sensitivity of the removed
+parameters is exactly the NTK-trace loss.
+
+Outside the linearised regime, pruning also changes the Jacobian of the
+remaining parameters. Let
+\[
+\theta'
+=
+\theta-\theta_S,
+\qquad
+\theta_S
+=
+\sum_{i\in S}\theta_ie_i,
+\]
+and assume the masked empirical Jacobian is locally Lipschitz around $\theta$, i.e., there exists a constant $L_B > 0$ such that
+\[
+\frac1{\sqrt n}
+\|G_{\theta+\delta,B}-G_{\theta,B}\|_F
+\le
+L_B\|\delta\|_2
+\]
+for all sufficiently small perturbations \(\delta\).
+
+\begin{theorem}[Non-linear NTK trace perturbation]
+\label{thm:ntk_trace_bound}
+
+Under the above assumptions,
+\[
+\left|
+\operatorname{tr}(K_{\theta,A})
+-
+\operatorname{tr}(K_{\theta',B})
+\right|
+\le
+\sum_{i\in S}\widehat S_i(\theta)
++
+2L_B
+\sqrt{\operatorname{tr}(K_{\theta,B})}
+\,\|\theta_S\|_2
++
+L_B^2\|\theta_S\|_2^2 .
+\]
+
+\end{theorem}
+
+The first term is the exact linearised trace loss, while the remaining terms quantify non-linear Jacobian drift. Hence, when the pruned weights have small Euclidean norm and the masked Jacobian varies slowly, sensitivity pruning approximately controls the NTK-trace perturbation.
+
+\begin{proof}
+Let
+\[
+\Delta G := G_{\theta',B}-G_{\theta,B},
+\]
+where $\theta'$ is obtained from $\theta$ by pruning the coordinates indexed by
+$S$. By assumption,
+\[
+\|\Delta G\|_F \le L_B\|\theta_S\|_2.
+\]
+
+Since
+\[
+\operatorname{tr}(K_{\theta',B})
+=
+\|G_{\theta',B}\|_F^2,
+\]
+we expand
+\[
+\begin{aligned}
+\operatorname{tr}(K_{\theta',B})
+&=
+\|G_{\theta,B}+\Delta G\|_F^2 \\
+&=
+\|G_{\theta,B}\|_F^2
++
+2\langle G_{\theta,B},\Delta G\rangle_F
++
+\|\Delta G\|_F^2.
+\end{aligned}
+\]
+Hence,
+\[
+\begin{aligned}
+\left|
+\operatorname{tr}(K_{\theta',B})
+-
+\operatorname{tr}(K_{\theta,B})
+\right|
+&\le
+2\|G_{\theta,B}\|_F\|\Delta G\|_F
++
+\|\Delta G\|_F^2 \\
+&\le
+2L_B\|G_{\theta,B}\|_F\|\theta_S\|_2
++
+L_B^2\|\theta_S\|_2^2.
+\end{aligned}
+\]
+Using the identity
+\[
+\|G_{\theta,B}\|_F^2
+=
+\operatorname{tr}(K_{\theta,B}),
+\]
+we obtain
+\[
+\left|
+\operatorname{tr}(K_{\theta',B})
+-
+\operatorname{tr}(K_{\theta,B})
+\right|
+\le
+2L_B
+\sqrt{\operatorname{tr}(K_{\theta,B})}
+\,
+\|\theta_S\|_2
++
+L_B^2\|\theta_S\|_2^2.
+\]
+
+Finally, by Proposition~\ref{thm:exact_ntk_trace},
+\[
+\operatorname{tr}(K_{\theta,A})
+=
+\operatorname{tr}(K_{\theta,B})
++
+\sum_{i\in S}\widehat S_i(\theta),
+\]
+so
+\[
+\begin{aligned}
+\left|
+\operatorname{tr}(K_{\theta,A})
+-
+\operatorname{tr}(K_{\theta',B})
+\right|
+&\le
+\left|
+\operatorname{tr}(K_{\theta,A})
+-
+\operatorname{tr}(K_{\theta,B})
+\right|
++
+\left|
+\operatorname{tr}(K_{\theta,B})
+-
+\operatorname{tr}(K_{\theta',B})
+\right| \\
+&=
+\sum_{i\in S}\widehat S_i(\theta)
++
+2L_B
+\sqrt{\operatorname{tr}(K_{\theta,B})}
+\,
+\|\theta_S\|_2
++
+L_B^2\|\theta_S\|_2^2,
+\end{aligned}
+\]
+which proves the claimed bound.
+\end{proof}
+
+\paragraph{Perturbation of the Fisher trace.}
+
+Let
+\[
+\mathcal I_A(\theta)
+=
+\mathbb E_x
+\!\left[
+J_{\theta,A}(x)^\top
+H_\theta(x)
+J_{\theta,A}(x)
+\right],
+\]
+and define
+\[
+F_A(\theta)
+=
+\operatorname{tr}\mathcal I_A(\theta).
+\]
+
+Assume
+\[
+0\preceq H_\theta(x)\preceq\Lambda I
+\]
+uniformly over the data distribution.
+
+\begin{lemma}
+For any parameter vector $\theta$,
+\[
+\operatorname{tr}\mathcal I(\theta)
+=
+\|H_\theta^{1/2}J_\theta\|_F^2.
+\]
+\end{lemma}
+
+\begin{proof}
+Since
+\[
+\mathcal I(\theta)=J_\theta^\top H_\theta J_\theta,
+\]
+the cyclic property of the trace gives
+\[
+\operatorname{tr}\mathcal I(\theta)
+=
+\operatorname{tr}(J_\theta^\top H_\theta J_\theta)
+=
+\operatorname{tr}(H_\theta^{1/2}J_\theta J_\theta^\top H_\theta^{1/2}),
+\]
+which equals
+\[
+\|H_\theta^{1/2}J_\theta\|_F^2.
+\qedhere
+\]
+\end{proof}
+
+\begin{lemma}[Coordinate-wise Fisher bound]
+\label{lem:coordinate_fisher_bound}
+Assume that the output-space Hessian satisfies
+\[
+0 \preceq H_\theta(x) \preceq \Lambda I
+\]
+for almost every input $x$. Then, for every parameter coordinate $i$,
+\[
+\mathcal{I}_{ii}(\theta)
+\le
+\Lambda S_i(\theta),
+\]
+where
+\[
+S_i(\theta)
+=
+\mathbb{E}_x\!\left[
+\left\|
+\frac{\partial f_\theta(x)}{\partial \theta_i}
+\right\|^2
+\right].
+\]
+\end{lemma}
+
+\begin{proof}
+Recall that the Fisher information matrix can be written as
+\[
+\mathcal{I}(\theta)
+=
+\mathbb{E}_x\!\left[
+J_\theta(x)^\top
+H_\theta(x)
+J_\theta(x)
+\right].
+\]
+Therefore, its $(i,i)$-th entry is
+\[
+\mathcal{I}_{ii}(\theta)
+=
+\mathbb{E}_x\!\left[
+\left(
+\frac{\partial f_\theta(x)}{\partial \theta_i}
+\right)^\top
+H_\theta(x)
+\left(
+\frac{\partial f_\theta(x)}{\partial \theta_i}
+\right)
+\right].
+\]
+Since $H_\theta(x)\preceq \Lambda I$, we have
+\[
+v^\top H_\theta(x)v
+\le
+\Lambda\|v\|^2
+\]
+for every vector $v$. Applying this inequality with
+\[
+v=\frac{\partial f_\theta(x)}{\partial\theta_i}
+\]
+gives
+\[
+\left(
+\frac{\partial f_\theta(x)}{\partial\theta_i}
+\right)^\top
+H_\theta(x)
+\left(
+\frac{\partial f_\theta(x)}{\partial\theta_i}
+\right)
+\le
+\Lambda
+\left\|
+\frac{\partial f_\theta(x)}{\partial\theta_i}
+\right\|^2.
+\]
+Taking expectations over $x$ yields
+\[
+\mathcal{I}_{ii}(\theta)
+\le
+\Lambda
+\mathbb{E}_x\!\left[
+\left\|
+\frac{\partial f_\theta(x)}{\partial\theta_i}
+\right\|^2
+\right]
+=
+\Lambda S_i(\theta),
+\]
+which completes the proof.
+\end{proof}
+
+\begin{remark}[Mini-batch approximation]
+In practice, the expectation defining $S_i(\theta)$ is approximated using
+mini-batches sampled from $\mu_{\mathcal X}$. Specifically, for a mini-batch
+$\{x_b\}_{b=1}^B$,
+\[
+\widehat S_i(\theta)
+=
+\frac1B
+\sum_{b=1}^B
+\|s_i(x_b;\theta)\|_2^2,
+\]
+which satisfies
+\[
+\mathbb E[\widehat S_i(\theta)]
+=
+S_i(\theta).
+\]
+Thus, $\widehat S_i(\theta)$ provides an unbiased Monte Carlo estimator of the
+population sensitivity score used in Theorem~\ref{thm:fisher_trace}.
+\end{remark}
+
+The following theorem relates Fisher-trace perturbations to empirical
+sensitivities.
+
+Let \(A\) denote the full parameter index set and \(B=A\setminus S\) the retained parameter set after pruning. We write
+\(\mathcal I_A(\theta)\) for the Fisher information matrix of the full model and
+\(\mathcal I_B(\theta)\) for the principal submatrix of
+\(\mathcal I_A(\theta)\) obtained by restricting to the indices in \(B\). Thus,
+\[
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta)
+=
+\sum_{i\in S}\mathcal I_{ii}(\theta).
+\]
+After pruning, let \(\theta'\) denote the perturbed parameter vector with
+\(\theta'_i=0\) for \(i\in S\). We use
+\(\mathcal I_B(\theta')\) to denote the Fisher information matrix of the pruned model evaluated at \(\theta'\).
+
+
+\begin{theorem}[Fisher trace perturbation]
+\label{thm:fisher_trace}
+
+In the linearised regime,
+\[
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta)
+=
+\sum_{i\in S}\mathcal I_{ii}(\theta)
+\le
+\Lambda
+\sum_{i\in S}\widehat S_i(\theta).
+\]
+
+If, moreover, the weighted Jacobian
+\(H_\theta^{1/2}J_{\theta,B}\)
+is locally Lipschitz with constant \(L_B^F\), then
+\[
+\left|
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta')
+\right|
+\le
+\sum_{i\in S}\mathcal I_{ii}(\theta)
++
+2L_B^F
+\sqrt{\operatorname{tr}\mathcal I_B(\theta)}
+\,
+\|\theta_S\|_2
++
+(L_B^F)^2
+\|\theta_S\|_2^2 .
+\]
+
+\end{theorem}
+
+Since
+\[
+F_A(\theta)\le\Lambda T_A(\theta),
+\]
+functional sensitivity controls Fisher-trace loss whenever the output-space Fisher is uniformly bounded.
+
+\begin{proof}
+Since the pruned model removes exactly the parameters indexed by
+\(S=A\setminus B\), in the linearised regime the Fisher trace satisfies
+\[
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta)
+=
+\sum_{i\in S}\mathcal I_{ii}(\theta).
+\]
+Applying the coordinate-wise Fisher bound
+\(
+\mathcal I_{ii}(\theta)\le
+\Lambda\widehat S_i(\theta)
+\)
+gives
+\[
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta)
+\le
+\Lambda
+\sum_{i\in S}\widehat S_i(\theta).
+\]
+
+For the perturbation estimate, write
+\[
+F_B(\theta)
+:=
+H_\theta^{1/2}J_{\theta,B},
+\]
+so that
+\[
+\operatorname{tr}\mathcal I_B(\theta)
+=
+\|F_B(\theta)\|_F^2.
+\]
+By assumption,
+\[
+\|F_B(\theta')-F_B(\theta)\|_F
+\le
+L_B^F
+\|\theta'-\theta\|_2.
+\]
+Since \(\theta'\) differs from \(\theta\) only in the coordinates
+\(S\),
+\[
+\|\theta'-\theta\|_2=\|\theta_S\|_2.
+\]
+Hence,
+\begin{align*}
+\operatorname{tr}\mathcal I_B(\theta')
+&=
+\|F_B(\theta')
+\|_F^2                                                   \\
+&=
+\|F_B(\theta)+\Delta\|_F^2                               \\
+&=
+\|F_B(\theta)\|_F^2
++
+2\langle F_B(\theta),\Delta\rangle
++
+\|\Delta\|_F^2,
+\end{align*}
+where
+\(
+\Delta=F_B(\theta')-F_B(\theta)
+\).
+Using Cauchy-Schwarz and the Lipschitz bound,
+\[
+\|\Delta\|_F
+\le
+L_B^F\|\theta_S\|_2,
+\]
+gives
+\[
+\operatorname{tr}\mathcal I_B(\theta')
+\le
+\operatorname{tr}\mathcal I_B(\theta)
++
+2L_B^F
+\sqrt{\operatorname{tr}\mathcal I_B(\theta)}
+\,
+\|\theta_S\|_2
++
+(L_B^F)^2
+\|\theta_S\|_2^2.
+\]
+Finally,
+\[
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta')
+=
+\bigl(
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta)
+\bigr)
++
+\bigl(
+\operatorname{tr}\mathcal I_B(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta')
+\bigr),
+\]
+and the triangle inequality yields
+\[
+\left|
+\operatorname{tr}\mathcal I_A(\theta)
+-
+\operatorname{tr}\mathcal I_B(\theta')
+\right|
+\le
+\sum_{i\in S}\mathcal I_{ii}(\theta)
++
+2L_B^F
+\sqrt{\operatorname{tr}\mathcal I_B(\theta)}
+\,
+\|\theta_S\|_2
++
+(L_B^F)^2
+\|\theta_S\|_2^2,
+\]
+which proves the claim.
+\end{proof}
+
+\subsection{The Cost of Pruning Early}
+\label{subsec:early-prune-bound}
+
+The results above bound the damage caused by pruning at a \emph{fixed} parameter
+vector. The question specific to early pruning is different: how much worse is
+the mask chosen at $\theta^{(t_p)}$ than the mask that would have been chosen at
+convergence? This subsection answers that in terms of two directly measurable
+quantities, the top-$k$ rank overlap and the local gap density of the
+sensitivity spectrum.
+
+Fix a retained-parameter budget $k$ and write $S^{(t)}_i:=S_i(\theta^{(t)})$.
+Let $S^{(T)}_{(1)}\ge S^{(T)}_{(2)}\ge\cdots\ge S^{(T)}_{(p)}$ denote the order
+statistics of the sensitivity spectrum at convergence, $\operatorname{rk}_T(i)$
+the rank of index $i$ in that ordering, and
+\[
+\mathcal K_t
+:=
+\bigl\{
+i : \operatorname{rk}_t(i)\le k
+\bigr\}
+\]
+the top-$k$ keep-set selected at step $t$. By
+Proposition~\ref{thm:exact_ntk_trace}, the linearised trace damage of a
+keep-set $\mathcal K$ evaluated at convergence is
+\[
+D(\mathcal K)
+:=
+\sum_{i\notin\mathcal K} S^{(T)}_i
+=
+\operatorname{tr}(Q_{\theta^{(T)}})
+-
+\sum_{i\in\mathcal K} S^{(T)}_i,
+\]
+and the quantity of interest is the \emph{excess} damage from selecting at
+$t_p$ rather than at $T$,
+\begin{equation}
+    \mathcal E(t_p)
+    :=
+    D\bigl(\mathcal K_{t_p}\bigr)
+    -
+    D\bigl(\mathcal K_{T}\bigr)
+    \;\ge\;0 .
+    \label{eq:excess-damage}
+\end{equation}
+Let
+\[
+O_k(t_p)
+:=
+\frac{
+\bigl|\mathcal K_{t_p}\cap\mathcal K_T\bigr|
+}{k}
+\in[0,1]
+\]
+be the top-$k$ overlap, and for a window radius $R\ge1$ define the
+\emph{frontier gap}
+\begin{equation}
+    G_k(R)
+    :=
+    S^{(T)}_{(\max(k-R,1))}
+    -
+    S^{(T)}_{(\min(k+R,p))}.
+    \label{eq:frontier-gap}
+\end{equation}
+
+\begin{proposition}[Excess damage of early pruning]
+\label{prop:early-prune}
+Suppose every index that changes side of the top-$k$ boundary between $t_p$ and
+$T$ has convergence rank within $R$ of the cut, i.e.
+\begin{equation}
+    \mathcal K_{t_p}\,\triangle\,\mathcal K_T
+    \subseteq
+    \bigl\{
+    i:\bigl|\operatorname{rk}_T(i)-k\bigr|\le R
+    \bigr\}.
+    \label{eq:local-churn}
+\end{equation}
+Then
+\[
+0
+\;\le\;
+\mathcal E(t_p)
+\;\le\;
+k\bigl(1-O_k(t_p)\bigr)\,G_k(R).
+\]
+\end{proposition}
+
+\begin{proof}
+Since $|\mathcal K_{t_p}|=|\mathcal K_T|=k$, the two set differences have equal
+cardinality
+\[
+m
+:=
+\bigl|\mathcal K_T\setminus\mathcal K_{t_p}\bigr|
+=
+\bigl|\mathcal K_{t_p}\setminus\mathcal K_T\bigr|
+=
+k\bigl(1-O_k(t_p)\bigr).
+\]
+Expanding Equation~\eqref{eq:excess-damage},
+\[
+\mathcal E(t_p)
+=
+\sum_{i\in\mathcal K_T} S^{(T)}_i
+-
+\sum_{i\in\mathcal K_{t_p}} S^{(T)}_i
+=
+\sum_{a\in\mathcal K_T\setminus\mathcal K_{t_p}} S^{(T)}_a
+-
+\sum_{b\in\mathcal K_{t_p}\setminus\mathcal K_T} S^{(T)}_b .
+\]
+Enumerate the two differences as $a_1,\ldots,a_m$ and $b_1,\ldots,b_m$ in any
+order and pair them, so that
+\(
+\mathcal E(t_p)=\sum_{j=1}^m\bigl(S^{(T)}_{a_j}-S^{(T)}_{b_j}\bigr).
+\)
+Every $a_j$ lies in $\mathcal K_T$ and every $b_j$ lies outside it, hence
+$\operatorname{rk}_T(a_j)\le k<\operatorname{rk}_T(b_j)$ and therefore
+$S^{(T)}_{a_j}\ge S^{(T)}_{(k)}\ge S^{(T)}_{(k+1)}\ge S^{(T)}_{b_j}$, giving
+non-negativity. For the upper bound, both $a_j$ and $b_j$ lie in
+$\mathcal K_{t_p}\triangle\mathcal K_T$, so
+Equation~\eqref{eq:local-churn} gives
+$\operatorname{rk}_T(a_j)\ge k-R$ and $\operatorname{rk}_T(b_j)\le k+R$, whence
+$S^{(T)}_{a_j}\le S^{(T)}_{(\max(k-R,1))}$ and
+$S^{(T)}_{b_j}\ge S^{(T)}_{(\min(k+R,p))}$. Each paired term is thus at most
+$G_k(R)$, and summing over $j$ gives
+$\mathcal E(t_p)\le m\,G_k(R)=k(1-O_k(t_p))G_k(R)$.
+\end{proof}
+
+Both factors in Proposition~\ref{prop:early-prune} are measurable without
+reference to the bound itself: $O_k(t_p)$ is the top-$k$ overlap between the
+sensitivity orderings at $t_p$ and at $T$, and $G_k(R)$ is read off the sorted
+spectrum at convergence. The bound therefore converts a statement about rank
+stability into a statement about functional damage, with no free parameters
+fitted to the damage curve.
+
+\begin{remark}[Why the bound is tight where it matters]
+The two factors trade off in a favourable direction. Rank churn requires drift
+larger than the local spacing of the spectrum, so churn concentrates where the
+spectrum is dense --- and where the spectrum is dense, $G_k(R)$ is small.
+Conversely, in regions where $G_k(R)$ is large the spacing is wide and swaps are
+correspondingly rare, so $1-O_k(t_p)$ is small. Empirically the sensitivity
+spectrum is heavy-tailed, which makes the frontier gap largest near the top of
+the ordering; a budget $k$ placed in that region should therefore admit both a
+high overlap and a bound that is not vacuous. Verifying this trade-off
+quantitatively --- that is, predicting the measured $\mathcal E(t_p)$ curve from
+independently measured $O_k$ and $G_k$ --- is the central empirical test of this
+section.
+\end{remark}
+
+\begin{remark}[Scope]
+Proposition~\ref{prop:early-prune} is a statement about linearised trace damage,
+not about test accuracy: it inherits the fixed-Jacobian assumption of
+Proposition~\ref{thm:exact_ntk_trace}, and the additional error incurred when
+that assumption fails is controlled by Theorem~\ref{thm:ntk_trace_bound}. The
+combinatorial argument applies to any score on substituting its own spectrum,
+but the empirical inputs $O_k$ and $G_k$ must then be measured for that score;
+we state and use the bound for $S$ only, and discuss why the corresponding
+stability is not inherited by the magnitude-weighted score $P_i$ in
+Section~\ref{subsec:score-choice}. Assumption~\eqref{eq:local-churn} is a
+locality condition on rank churn rather than a consequence of the definitions,
+and we report the smallest $R$ for which it holds empirically rather than
+assuming a value.
+\end{remark}
+
+\section{Pruning Algorithm}
+
+Algorithm~\ref{alg:sensitivity pruning} gives the proposed
+functional-sensitivity pruning procedure at prune time $t_p$; setting $t_p=0$
+recovers pruning at initialisation. The algorithm combines certified
+sensitivity-based pruning with a flow-preservation screen and connectivity
+repair for subnetworks isolated from the input or output. At each round,
+parameters whose normalised sensitivity is \emph{certified} to lie below the
+current pruning frontier are selected as candidates; the tentative mask is then
+refined by a second screen evaluated on the damaged model, followed by the
+disconnection test and $k$-hop bottleneck resolution of
+Section~\ref{subsec:khop}. The process repeats until the target density is
+reached.
+
+\begin{algorithm}[!ht]
+\caption{Functional-sensitivity pruning at prune time $t_p$}
+\label{alg:sensitivity pruning}
+\begin{algorithmic}[1]
+\Require Model $F$, data distribution $\mathcal D$, prune time $t_p$, target density
+$\eta\in(0,1]$, confidence $\alpha$, quantile schedule $q_1\le q_2\le\cdots$,
+probe-batch count $n$, hop radius $k$, influence threshold $\gamma$
+\Ensure Mask $m\in\{0,1\}^p$ with $\operatorname{Density}(m)\le\eta$
+\State Train $F$ densely for $t_p$ steps to obtain $\theta^{(t_p)}$
+       \Comment{$t_p=0$: prune at initialisation}
+\State $m\gets\mathbf 1_p$, \; $r\gets 0$
+\While{$\operatorname{Density}(m)>\eta$}
+  \State $r\gets r+1$
+  \State Draw probe batches $B_1,\ldots,B_n$ and an \emph{independent} threshold set $B'$
+  \State $\hat\mu_i,\hat\sigma_i\gets$ mean, s.d.\ of
+         $\bigl\{\widehat S_i(\theta^{(t_p)},m;B_j)\bigr\}_{j=1}^{n}$ for all active $i$
+  \State $\widetilde\mu_i\gets\hat\mu_i/\widehat\beta_{\ell(i)}$
+         \Comment{architecture normalisation, Sec.~\ref{sec:normalisation}}
+  \State $\hat\tau_{q_r}\gets$ lower $q_r$-quantile of $\{\widetilde\mu_i\}$ evaluated on $B'$
+  \State $\mathcal P\gets\{i: m_i=1,\;\mathrm{UCB}_i<\hat\tau_{q_r}\}$
+         \Comment{certified set, Sec.~\ref{subsec:certified}}
+  \If{$\mathcal P=\emptyset$}
+    \State $n\gets 2n$; \textbf{continue}
+         \Comment{sharpen estimates rather than prune uncertainly}
+  \EndIf
+  \State $m^{(1)}\gets m$; \; $m^{(1)}_i\gets 0$ for all $i\in\mathcal P$
+         \Comment{tentative mask}
+  \State Recompute $\widehat S_i\bigl(\theta^{(t_p)},m^{(1)}\bigr)$ for $i\in\mathcal P$
+         \Comment{flow-preservation screen}
+  \State $\mathcal P'\gets\bigl\{i\in\mathcal P:\;
+         \widehat S_i(\theta^{(t_p)},m^{(1)})<\hat\tau_{q_r}\bigr\}$
+  \State $m^{(2)}\gets m$; \; $m^{(2)}_i\gets 0$ for all $i\in\mathcal P'$
+  \State $m^{(3)}\gets\textsc{Repair}_{k,\gamma}\bigl(m^{(2)}\bigr)$
+         \Comment{Alg.~\ref{alg:khop_sensitivity_influence_resolution}}
+  \If{$\operatorname{Density}(m^{(3)})<\operatorname{Density}(m)$}
+    \State $m\gets m^{(3)}$
+         \Comment{accept only if density strictly decreases}
+  \Else
+    \State $q_{r+1}\gets q_r+\Delta q$
+         \Comment{repair undid the round; widen the frontier}
+  \EndIf
+\EndWhile
+\State \Return $m$
+\end{algorithmic}
+\end{algorithm}
+
+Here $\operatorname{Density}(m)=\frac1p\sum_i m_i$ is the fraction of retained
+parameters, so $\eta$ is a target density and $1-\eta$ the target sparsity. All
+sensitivities are evaluated on the \emph{currently masked} network: we write
+$\widehat S_i(\theta,m)$ for the empirical sensitivity of parameter $i$ in the
+network $F_{\theta\odot m}$, which is the quantity of
+Equation~\eqref{eq:functional-sensitivity-score} computed with the mask applied
+to the parameters rather than to the function.
+
+The flow-preservation screen at line~15 is the reason sensitivity is recomputed
+under the tentative mask $m^{(1)}$ rather than under $m$. If a candidate set
+would sever an information pathway, then the parameters on that pathway acquire
+\emph{high} sensitivity in the damaged network, because restoring any one of
+them would restore output-relevant flow; such parameters therefore fail the
+second screen and are retained. In the extreme case in which $\mathcal P$ would
+zero an entire layer, every parameter in that layer has high sensitivity under
+$m^{(1)}$ and none is removed.
+
+Two guards make the loop well posed. First, a parameter dropped from
+$\mathcal P$ by the flow screen is not reconsidered within the same round, so
+line~15 cannot oscillate. Second, only $\textsc{Repair}$ may re-add parameters,
+and a round is committed only if it strictly reduces density (line~19);
+otherwise the quantile is widened. Together these ensure
+$\operatorname{Density}(m)$ is non-increasing across accepted rounds and
+strictly decreasing infinitely often, so the loop terminates. Note that
+certification and the density target interact: the achieved density is reported
+alongside $\alpha$, and $\eta$ is not guaranteed at fixed $\alpha$ and $n$.
+
+% true only if the sensitivity is recomputed with respect to the damaged model in a way that allows a single restored parameter to re-establish a path.
+
+Quantile-based pruning on the scaled sensitivity is used as the thresholding mechanism.
+
+\subsection{Choice of Score: $S_i$ versus $P_i$}
+\label{subsec:score-choice}
+
+Section~\ref{sec:sensitivity} produced two candidate scores: the unweighted
+sensitivity $S_i(\theta)$, which measures the intrinsic responsiveness of the
+function to coordinate $i$, and the magnitude-weighted score
+$P_i(\theta)=\theta_i^2S_i(\theta)$, which by
+Equation~\eqref{eq:pruning-perturbation} is the first-order estimate of the
+functional change actually caused by setting $\theta_i$ to zero. The two
+disagree exactly on parameters that are highly responsive but currently small.
+
+We use the unweighted score $S_i$ at every prune time, and treat $P_i$ as a
+baseline rather than as our criterion. There are three reasons.
+
+\paragraph{The two scores optimise different objectives.} $P_i$ estimates the
+change in the \emph{currently realised} function caused by removing
+$\theta_i$. That is the correct objective when pruning is terminal, i.e.\ when
+the pruned network is deployed without further optimisation. It is not the
+objective here: after pruning at $t_p\ll T$ the subnetwork is trained for the
+remaining $T-t_p$ steps, so what must be preserved is the subnetwork's capacity
+to \emph{learn}, not its current input--output map. By
+Proposition~\ref{thm:exact_ntk_trace} the unweighted score is exactly the
+quantity whose removal cost is the loss in NTK trace, and by
+Equation~\eqref{eq:ntk-trace-sensitivity} the NTK trace is the total local
+Jacobian energy that governs the convergence of function-space modes under the
+linearised dynamics. Preserving $\sum_{i\in\mathcal K}S_i$ is therefore a
+trainability criterion, in the same sense as
+SNIP~\cite{lee2019snip}, GraSP~\cite{wang2020grasp} and
+SynFlow~\cite{tanaka2020synflow}, whereas $P_i$ is a function-preservation
+criterion in the sense of OBD~\cite{lecun1990obd}. The apparent tension with
+Equation~\eqref{eq:pruning-perturbation} is therefore not a contradiction: that
+expansion correctly describes the immediate functional perturbation, which is
+not the quantity we set out to control.
+
+\paragraph{$P_i$ is a known criterion in disguise.} The magnitude-weighted score
+is not a novel object. Combining
+Equation~\eqref{eq:fisher-sensitivity} with the Gaussian-regression
+specialisation $\mathcal I_{ii}=S_i/\sigma^2$ gives
+\[
+P_i(\theta)
+=
+\theta_i^2 S_i(\theta)
+=
+\sigma^2\,\theta_i^2\,\mathcal I_{ii}(\theta),
+\]
+so in that case $P_i$ coincides, up to the constant $2\sigma^2$, with the
+Optimal Brain Damage criterion $\tfrac12 H_{ii}\theta_i^2$ evaluated under the
+Gauss--Newton approximation $H_{ii}\approx\mathcal I_{ii}$~\cite{lecun1990obd,
+hassibi1993obs}. For a general likelihood it differs from Fisher
+pruning~\cite{theis2018fisher} and from squared-Taylor
+importance~\cite{molchanov2019importance} only in replacing the output-space
+metric $H_\theta(x)$ by the identity. We regard this as a feature of the
+framework rather than a criterion to adopt: by
+Proposition~\ref{prop:containment}, Fisher pruning, squared-Taylor importance
+and Optimal Brain Damage are all obtained from $s_i$ by a choice of output
+weighting and magnitude exponent, and $P_i$ is the member of that family
+reached by keeping the magnitude scaling and discarding only the loss weighting.
+It is the corner with \emph{neither} weighting --- the unweighted, label-free,
+magnitude-free score --- that is not already in the literature.
+
+\paragraph{Only the $S$ ordering is known to stabilise early.} The
+justification for pruning at $t_p\ll T$ rests on the ordering induced by the
+score being approximately settled by $t_p$
+(Section~\ref{subsec:early-prune-bound}). That stabilisation has been
+established for the $S$ ordering, whose drift is controlled by the movement of
+Jacobian column norms. The score $P_i$ additionally carries the factor
+$\theta_i^2$, and weight magnitudes continue to evolve throughout training
+rather than settling in the initial phase, so the rank stability of $P$ does not
+follow from that of $S$ and would have to be established separately. Adopting
+$P_i$ would therefore forfeit the premise that motivates early pruning.
+
+Accordingly, $S_i$ is the criterion throughout, and $P_i$, magnitude, SNIP and
+Fisher pruning are reported as baselines at matched prune times. We do report
+the top-$k$ agreement between the $S$ and $P$ orderings as a function of $t_p$,
+since a criterion that merely reproduces a weight-scaled ranking would not
+warrant separate treatment.
+
+\subsection{Effect of a Fixed Trajectory Realisation}
+\label{subsec:fixed_initialisation}
+
+Algorithm~\ref{alg:sensitivity pruning} does not retrain or reinitialise the
+network between pruning rounds. Instead, the single parameter realisation
+$\theta^{(t_p)}$ reached at the prune time is used throughout the construction
+of the pruning mask. This choice has an important statistical interpretation.
+The algorithm estimates functional sensitivity with respect to the data
+distribution and the current mask, conditional on the realised network at
+$t_p$, rather than averaging over the distribution of networks that the
+training procedure could have produced.
+
+The reference distribution depends on $t_p$. At $t_p=0$ the only randomness in
+$\theta^{(0)}$ is the initialisation seed, and the quantity being conditioned
+away is initialisation variance. For $t_p>0$, $\theta^{(t_p)}$ additionally
+depends on the data order, the augmentation stream and any stochasticity in the
+optimiser, so the same analysis applies with the initialisation distribution
+replaced by the distribution of $\theta^{(t_p)}$ induced by the full training
+procedure. We write $\bar S_{i,t}(M_t)$ for the expectation of the sensitivity
+under that distribution, whichever $t_p$ is in force, and note that the
+practically relevant experiment differs in the two cases: at $t_p=0$ one varies
+the seed, whereas at $t_p>0$ one must vary seed and data order separately in
+order to attribute mask variability correctly.
+
+Let $M_t$ denote the active mask at pruning iteration $t$, and let
+$\widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)$ denote the mini-batch estimate of the
+functional sensitivity of parameter $\theta_i$ computed on a fresh mini-batch
+$B_t$. The corresponding conditional population sensitivity is
+\begin{equation}
+    S_{i,t}(\theta^{(t_p)},M_t)
+    :=
+    \mathbb E_{B \sim \mathcal D}
+    \left[
+        \widehat S_{i,t}(B;\theta^{(t_p)},M_t)
+    \right].
+\end{equation}
+Thus, with no reinitialisation, the stochasticity in each pruning step arises
+from the sampled mini-batch, while the initialisation is treated as fixed. The
+algorithm therefore targets the conditional ranking
+\begin{equation}
+    i \mapsto S_{i,t}(\theta^{(t_p)},M_t),
+\end{equation}
+rather than the fully averaged ranking
+\begin{equation}
+    \bar S_{i,t}(M_t)
+    :=
+    \mathbb E_{B \sim \mathcal D}
+    \left[
+        S_{i,t}(M_t)
+    \right].
+\end{equation}
+
+This distinction separates two sources of statistical error. Mini-batch sampling
+introduces estimation error around $S_{i,t}(\theta^{(t_p)},M_t)$, whereas fixing
+the trajectory introduces a possible deviation between
+$S_{i,t}(\theta^{(t_p)},M_t)$ and the trajectory-averaged quantity
+$\bar S_{i,t}(M_t)$. Reinitialising at every pruning iteration would reduce this
+second source of dependence, but it would also change the object being estimated:
+the resulting mask would correspond to an average over independently sampled
+networks rather than to the functional geometry of the single trainable
+subnetwork contained in the realised network at $t_p$.
+
+\begin{lemma}[Conditional population ranking]
+    Suppose that for each active parameter $i$,
+\begin{equation}
+    \widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)
+    =
+    S_{i,t}(\theta^{(t_p)},M_t)
+    +
+    \varepsilon_{i,t},
+\end{equation}
+where $\varepsilon_{i,t}$ is the mini-batch estimation error conditional on
+$\theta^{(t_p)}$ and $M_t$. Assume that each mini-batch is sampled i.i.d.\ from the underlying data
+distribution and that the per-example sensitivity $\|s_i(x;\theta)\|_2^2$ is
+conditionally sub-exponential with variance proxy $\sigma_i^2$ and scale
+parameter $b_i$. Then, with probability at least $1-\alpha$,
+\begin{equation}
+    \left|
+        \widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)
+        -
+        S_{i,t}(\theta^{(t_p)},M_t)
+    \right|
+    \leq
+    \sigma_i
+    \sqrt{
+        \frac{2\log(2p/\alpha)}{|B_t|}
+    }
+    +
+    \frac{2 b_i \log(2p/\alpha)}{3|B_t|},
+    \qquad i=1,\ldots,p,
+\end{equation}
+where $p$ is the number of active parameters. Hence, diverse and sufficiently
+large mini-batches justify the use of the empirical sensitivity ranking as an
+estimate of the conditional population ranking. We assume sub-exponential
+rather than sub-Gaussian tails because $\widehat S_{i}$ averages \emph{squared}
+Jacobian norms; the empirical sensitivity spectrum is heavy-tailed, so a
+sub-Gaussian proxy would not be justified and the linear term above cannot be
+discarded at small $|B_t|$.
+\end{lemma}
+
+\begin{proof}
+Let
+\[
+\varepsilon_{i,t}
+=
+\widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)
+-
+S_{i,t}(\theta^{(t_p)},M_t),
+\]
+and suppose that, conditionally on $(\theta^{(t_p)},M_t)$,
+$\varepsilon_{i,t}$ is a mean-zero average of $|B_t|$ i.i.d.\ sub-exponential
+terms with variance proxy $\sigma_i^2$ and scale $b_i$. Bernstein's inequality
+then gives, for every $u>0$,
+\[
+\Pr\!\left(
+    |\varepsilon_{i,t}| > u
+\right)
+\le
+2\exp\!\left(
+    -\frac{|B_t|u^2}{2\left(\sigma_i^2 + b_i u/3\right)}
+\right).
+\]
+
+Applying a union bound over the $p$ active parameters and setting the right-hand
+side equal to $\alpha/p$ for each $i$ gives, with probability at least
+$1-\alpha$ simultaneously over all $i$,
+\[
+\left|
+    \widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)
+    -
+    S_{i,t}(\theta^{(t_p)},M_t)
+\right|
+\le
+\sigma_i
+\sqrt{
+    \frac{2\log(2p/\alpha)}{|B_t|}
+}
++
+\frac{2 b_i\log(2p/\alpha)}{3|B_t|},
+\qquad i=1,\ldots,p,
+\]
+where we have used the standard inversion of the Bernstein bound. The first
+term is the sub-Gaussian rate; the second is the sub-exponential correction,
+which dominates when $|B_t| \lesssim b_i^2/\sigma_i^2$.
+\end{proof}
+
+However, mini-batch diversity alone does not remove dependence on
+$\theta^{(t_p)}$. The deviation induced by using one realised trajectory can be
+written as
+\begin{equation}
+    b_{i,t}(\theta^{(t_p)},M_t)
+    :=
+    S_{i,t}(\theta^{(t_p)},M_t)
+    -
+    \bar S_{i,t}(M_t).
+\end{equation}
+This term is not reduced by increasing the mini-batch size. It is controlled
+only if the sensitivity criterion is stable across trajectories. A sufficient
+condition is that, with high probability over $\theta^{(t_p)}$,
+\begin{equation}
+    \max_i
+    \left|
+        S_{i,t}(\theta^{(t_p)},M_t)
+        -
+        \bar S_{i,t}(M_t)
+    \right|
+    \leq
+    \rho_t,
+\end{equation}
+for some small $\rho_t$. Under this condition, the fixed-initialisation ranking
+is close to the initialisation-averaged ranking. In particular, if the pruning
+threshold at iteration $t$ has margin
+\begin{equation}
+    \Delta_t
+    :=
+    \min_{i \in \mathcal K_t,\; j \in \mathcal P_t}
+    \left\{
+        \bar S_{i,t}(M_t) - \bar S_{j,t}(M_t)
+    \right\},
+\end{equation}
+where $\mathcal P_t$ is the set of parameters selected for pruning and
+$\mathcal K_t$ is the set of parameters retained, then the pruning decision is
+unchanged by fixing the trajectory whenever
+\begin{equation}
+    \Delta_t
+    >
+    2\rho_t + 2\epsilon_t,
+\end{equation}
+where
+\begin{equation}
+    \epsilon_t
+    :=
+    \max_i
+    \left|
+        \widehat S_{i,t}(B_t;\theta^{(t_p)},M_t)
+        -
+        S_{i,t}(\theta^{(t_p)},M_t)
+    \right|
+\end{equation}
+is the mini-batch estimation error. This condition shows that the absence of retraining is harmless when the
+sensitivity ranking has a sufficiently large margin relative to both mini-batch
+noise and trajectory-induced variation. The margin $\Delta_t$ is exactly the
+local gap of the sorted sensitivity spectrum at the pruning frontier, and is
+therefore directly measurable; we return to it in
+Section~\ref{subsec:early-prune-bound}, where the same gap controls the cost of
+pruning early rather than at convergence.
+
+The implication is that the algorithm should be interpreted as producing a
+subnetwork adapted to the functional geometry of the particular initialised
+network. This is consistent with the goal of zero-shot pruning: the objective is
+not to identify parameters that are unimportant for an average network, but to
+identify a sparse trainable subnetwork within the given initialisation. Repeated
+reinitialisation would instead estimate an ensemble-level pruning criterion,
+which may be statistically smoother but need not preserve the structure of the
+specific network that will subsequently be trained.
+
+Therefore, the theoretical role of mini-batch diversity is to control sampling
+error in the sensitivity estimates, while the role of a trajectory-stability
+assumption is to justify that the resulting pruning mask is not an artefact of a
+particular seed and data order. In the absence of such stability, the guarantees
+of Algorithm~\ref{alg:sensitivity pruning} should be understood as conditional on
+the realised $\theta^{(t_p)}$. With stability, the same guarantees extend to the
+trajectory-averaged sensitivity ranking up to an error of order $\rho_t$.
+
+% HOW TO PREVENT CYCLES, where zeroed parameters come back -> will this reduce when sensitivity statistics improve?
+
+% How to deal with the effect of biases in non-linearities? This could push parameters to zero unless this bias changes?
+
+% Want to maintain expressivity, not find the minimum number of parameters to represent the initialisation function
+
+% Is there any condition under which the number of non-zero parameters decreases? Or does the quantile need to be gradually increased? Is a fixed point good?
+
+\subsection{Parameter sensitivity estimation}
+
+The empirical sensitivity of each parameter is estimated from a finite collection of mini-batches and is therefore subject to sampling variability. Let
+\[
+s_i^{(1)},\ldots,s_i^{(n)}
+\]
+denote the sensitivity estimates obtained for parameter $i$ across $n$ independently sampled mini-batches. Because the population variance is unknown and the number of mini-batches may be limited, we model uncertainty using a Student-$t$ distribution. For each parameter, we construct the upper confidence bound ($\mathrm{UCB}_i$)
+\[
+\tilde{s}_i
+\;=\;
+\mathrm{UCB}_i
+\;=\;
+\hat{\mu}_i
++
+t_{1-\alpha,\;n-1}\,
+\frac{\hat{\sigma}_i}{\sqrt{n}},
+\]
+where
+\[
+\hat{\mu}_i=\frac1n\sum_{k=1}^n s_i^{(k)},
+\qquad
+\hat{\sigma}_i^2=\frac{1}{n-1}\sum_{k=1}^n\bigl(s_i^{(k)}-\hat{\mu}_i\bigr)^2,
+\]
+and $t_{1-\alpha,\;n-1}$ is the $(1-\alpha)$ quantile of the Student-$t$ distribution with $n-1$ degrees of freedom. Note that $\hat{\sigma}_i/\sqrt{n}$ is the standard error of the mean, so the width of the bound has the same units as $S_i$.
+
+The quantity $\mathrm{UCB}_i$ provides a conservative sensitivity estimate and is used in place of the empirical mean in subsequent pruning calculations. Parameters whose estimated sensitivities are uncertain therefore receive larger pruning scores, reducing the probability of erroneously pruning parameters with substantial functional impact. As $n$ increases, the confidence interval contracts and $\mathrm{UCB}_i$ converges to the empirical sensitivity estimate.
+
+\section{Architecture-Normalised Sensitivity}
+\label{sec:normalisation}
+
+Raw sensitivity scores are not directly comparable across layers because their magnitude reflects both functional importance and architecture-dependent effects, including depth, width, fan-in, fan-out, residual pathways, and normalisation layers. A parameter in one layer may therefore exhibit systematically higher sensitivity than an equally important parameter in another layer without being more important to the network's behaviour.
+
+A naïve remedy is to normalise sensitivities using layer-wise statistics computed from the empirical sensitivity distribution. However, this can remove genuine differences in layer importance and tends to promote uniform sparsity patterns. Instead, we aim to remove only the sensitivity attributable to architecture and parameterisation while preserving differences arising from the learned function.
+
+We define an architecture-derived baseline sensitivity
+\begin{equation}
+\beta_{\ell}
+=
+\mathbb{E}_{\theta_0 \sim \mathcal{P}_{\mathrm{init}}}
+\!\left[
+S_i(\theta_0)
+\,\middle|\,
+i \in \ell
+\right],
+\end{equation}
+where $S_i$ is the sensitivity of parameter $i$ as defined in
+Equation~\eqref{eq:functional-sensitivity-score} (the expectation over
+$x\sim\mu_{\mathcal X}$ is already taken there), $\ell$ denotes the layer
+containing $i$, and $\mathcal{P}_{\mathrm{init}}$ is the network's
+initialisation distribution. This expectation captures the sensitivity expected from the network architecture, its initialisation scheme, and the input distribution prior to learning or pruning.
+
+The normalised sensitivity score is
+\begin{equation}
+\widetilde{S}_i
+=
+\frac{S_i}{\beta_{\ell}}.
+\end{equation}
+
+This score measures how sensitive a parameter is relative to the sensitivity predicted by architecture alone. Parameters with  
+\[
+\widetilde{S}_i > 1
+\]
+are more sensitive than expected from architectural effects alone, whereas values below unity indicate that their sensitivity is largely explained by architecture and parameterisation.
+
+\subsection{Functional Interpretation}
+
+Let $f(x;\theta)$ denote the network function and consider a small perturbation $\delta\theta_i$ to parameter $i$. By first-order approximation,
+\begin{equation}
+\delta F_\theta
+\approx
+\frac{\partial F_\theta}{\partial \theta_i}
+\,\delta\theta_i.
+\end{equation}
+Assuming perturbations of fixed variance,
+\begin{equation}
+\operatorname{Var}[\delta f]
+\propto
+\left\|
+\frac{\partial F_\theta}{\partial \theta_i}
+\right\|^2
+=
+S_i.
+\end{equation}
+The squared sensitivity therefore measures the amount of output variation induced by uncertainty in a parameter. Part of this variation is determined purely by the network parameterisation, and the baseline $\beta_{\ell}$ estimates this architectural contribution. Dividing by $\beta_{\ell}$ removes parameterisation-induced scaling effects, yielding a quantity more closely aligned with functional importance.
+
+Unlike layer-wise standardisation methods, this normalisation does not enforce
+equal sensitivity distributions across layers: $\beta_\ell$ is a fixed
+architectural constant rather than a statistic of the current sensitivities, so
+layers may retain substantially different levels of importance and develop
+non-uniform sparsity patterns. Unlike weight-scaled saliency measures such as
+SNIP, SynFlow or Optimal Brain Damage, the normalisation introduces no
+dependence on parameter magnitudes: both $S_i$ and $\beta_\ell$ are defined
+purely in terms of Jacobian energy, so the resulting score remains label-free
+and magnitude-free (Section~\ref{subsec:score-choice}).
+
+\paragraph{The normalisation is degenerate at $t_p=0$.} An important caveat
+follows from the definition. At the prune time the score being normalised is
+evaluated at $\theta^{(t_p)}$, while $\beta_\ell$ is an expectation over
+$\mathcal P_{\mathrm{init}}$. When $t_p=0$ these are the same distribution, so
+$S_i(\theta^{(0)})$ and $\beta_\ell$ differ only by the fluctuation of a single
+draw about its layer-conditional mean; dividing by $\beta_\ell$ then reduces, up
+to seed noise, to the layer-mean standardisation that this section set out to
+avoid, and by construction it drives the layerwise sparsity allocation toward
+uniformity --- precisely the failure mode identified by controlled comparisons of
+pruning at initialisation~\cite{frankle2021missing, su2020sanity}. For $t_p>0$
+the two quantities are genuinely different objects: $\beta_\ell$ is an
+architectural prior fixed before training, and
+$\widetilde S_i=S_i(\theta^{(t_p)})/\beta_\ell$ measures how far a parameter's
+sensitivity has departed from that prior during the initial phase of training.
+The normalisation is therefore informative exactly in the regime this paper
+targets, and we report the layerwise sparsity allocation with and without it at
+several $t_p$ to make the transition visible.
+
+\subsection{Estimation of the Architecture Sensitivity Baseline}
+
+For a broad class of neural networks, the sensitivity of a weight can be expressed as the product of a forward activation and a backward signal. Consider a parameter $W_{ab}^{\ell}$ in layer $\ell$. Its sensitivity satisfies
+\begin{equation}
+\label{eq:sensitivity_decomposition}
+s_i(x;\theta)
+=
+\frac{\partial F_\theta(x)}{\partial W_{ab}^{\ell}}
+=
+\delta_a^{\ell}(x)\,
+h_b^{\ell-1}(x),
+\end{equation}
+so that, by Equation~\eqref{eq:functional-sensitivity-score},
+\begin{equation}
+S_i
+=
+\mathbb{E}_x\!\left[
+\bigl(\delta_a^{\ell}(x)\bigr)^2
+\bigl(h_b^{\ell-1}(x)\bigr)^2
+\right],
+\end{equation}
+where $h^{\ell-1}$ denotes the input activation to the layer and $\delta^{\ell}$ denotes the back-propagated signal, $\frac{\partial f}{\partial (W_{ab}^{\ell + 1}h^\ell)}$. Assuming, as in standard mean-field analyses of wide networks, that the forward activations and back-propagated signals are approximately independent, this becomes
+\begin{equation}
+\beta_{\ell}
+\approx
+\mathbb{E}
+\!\left[
+(\delta_a^{\ell})^2
+\right]
+\,
+\mathbb{E}
+\!\left[
+(h_b^{\ell-1})^2
+\right].
+\end{equation}
+Assuming further that both quantities are approximately zero-mean, we estimate these second moments using their empirical variances, yielding
+\begin{equation}
+\widehat{\beta}_{\ell}
+=
+\operatorname{Var}(h^{\ell-1})
+\,
+\operatorname{Var}(\delta^{\ell}).
+\end{equation}
+This estimator requires only statistics already available during sensitivity computation and introduces negligible additional computational cost.
+
+The decomposition in Equation~\ref{eq:sensitivity_decomposition} holds for any parameter tensor that enters the network through a linear operation, including fully connected layers, convolutional kernels, attention projection matrices, and transformer feed-forward layers. Consequently, the baseline sensitivity depends only on the second-order statistics of the forward activations and back-propagated signals. Although non-linear operations (e.g., ReLU, GELU, softmax, and normalisation layers) influence these statistics by modifying both activations and gradient propagation, they do not alter the local forward-backward factorisation itself. Their effects are therefore incorporated implicitly through the empirical estimates
+\begin{equation}
+\widehat{\beta}_{\ell}
+=
+\operatorname{Var}(h^{\ell-1})
+\operatorname{Var}(\delta^{\ell}),
+\end{equation}
+computed directly from the activations recorded during the forward pass and the corresponding back-propagated gradients obtained during the backward pass. Since these quantities are already available via automatic differentiation, estimating $\widehat{\beta}_{\ell}$ introduces negligible computational overhead and requires no architecture- or activation-specific analytical correction. The same normalisation procedure therefore applies uniformly across multilayer perceptrons, convolutional networks, Vision Transformers, and related architectures while adapting automatically to their differing activation and gradient statistics.
+
+\subsection{Confidence-Certified Sensitivity Thresholding}
+\label{subsec:certified}
+
+Sensitivity estimates are computed from a finite collection of probe mini-batches and therefore contain sampling uncertainty. Rather than pruning a fixed fraction of parameters using point estimates alone, we certify that each removed parameter lies below the pruning threshold with confidence at least $1-\alpha$.
+
+For parameter $i$, let
+\[
+s_i^{(1)}, \ldots, s_i^{(t)}
+\]
+denote sensitivity measurements obtained from $t$ independently sampled probe batches. The running mean and standard error are
+\[
+\hat{\mu}_i
+=
+\frac{1}{t}\sum_{k=1}^{t} s_i^{(k)},
+\qquad
+SE_i
+=
+\frac{\hat{\sigma}_i}{\sqrt{t}},
+\]
+where
+\[
+\hat{\sigma}_i^2
+=
+\frac{1}{t-1}
+\sum_{k=1}^{t}
+\left(s_i^{(k)}-\hat{\mu}_i\right)^2.
+\]
+
+Using a Student-$t$ confidence interval, define
+\[
+\mathrm{LCB}_i
+=
+\hat{\mu}_i
+-
+t_{1-\alpha/2,\;t-1}\,
+SE_i,
+\]
+and
+\[
+\mathrm{UCB}_i
+=
+\hat{\mu}_i
++
+t_{1-\alpha/2,\;t-1}\,
+SE_i.
+\]
+For confidence level $1-\alpha$, the true expected sensitivity $\mu_i$ lies within this interval with probability at least $1-\alpha$.
+
+Let $\hat{\tau}_q$ denote the empirical lower $q$-quantile of the point estimates $\{\hat{\mu}_i\}_{i=1}^{n}$. The threshold is recomputed at each pruning iteration and defines the current pruning frontier. Parameters whose confidence intervals intersect the threshold cannot be reliably classified relative to the pruning boundary. Define the ambiguity set
+\[
+\mathcal B
+=
+\left\{
+i :
+\mathrm{LCB}_i
+\le
+\hat{\tau}_q
+\le
+\mathrm{UCB}_i
+\right\}.
+\]
+
+To ensure that only confidently low-sensitivity parameters are removed, we prune only
+\[
+\mathcal P
+=
+\left\{
+i :
+\mathrm{UCB}_i < \hat{\tau}_q
+\right\}.
+\]
+For every parameter $i\in\mathcal P$, the probability that its true sensitivity exceeds the threshold is at most $\alpha$. Consequently, every pruned parameter is certified to belong below the pruning threshold with confidence at least $1-\alpha$.
+
+As additional probe batches are accumulated,
+\[
+SE_i
+=
+O\!\left(\frac{1}{\sqrt{Bt}}\right),
+\]
+where $B$ is the probe batch size. Consequently, the confidence intervals contract at rate
+\[
+O\!\left(\frac{1}{\sqrt{Bt}}\right),
+\]
+allowing progressively more parameters to be certified below the threshold during later pruning iterations. In the limit $t\rightarrow\infty$, the confidence intervals vanish and the certified pruning set converges to that obtained from the true sensitivity ranking.
+
+To obtain a family-wise confidence guarantee over all parameters removed in a
+pruning round, we apply a Bonferroni correction. The correction must be applied
+over all parameters \emph{tested}, not over those ultimately certified: taking
+$m=|\mathcal P|$ would be circular, since $\mathcal P$ is itself defined in
+terms of the corrected bounds. We therefore set
+\[
+m = |\{i : m_{t,i}=1\}|,
+\]
+the number of currently active parameters, which yields a conservative but
+well-defined guarantee. With this choice the confidence bounds become
+\[
+\mathrm{LCB}_i
+=
+\hat{\mu}_i
+-
+t_{1-\alpha/(2m),\,t-1}
+SE_i,
+\]
+and
+\[
+\mathrm{UCB}_i
+=
+\hat{\mu}_i
++
+t_{1-\alpha/(2m),\,t-1}
+SE_i.
+\]
+
+The certified pruning set remains
+\[
+\mathcal P
+=
+\left\{
+i :
+\mathrm{UCB}_i < \hat{\tau}_q
+\right\},
+\]
+where $\hat{\tau}_q$ denotes the empirical lower $q$-quantile of the current sensitivity estimates.
+
+For any parameter $i\in\mathcal P$, the probability that its true mean sensitivity exceeds the empirical pruning threshold $\hat{\tau}_q$ is bounded above by $\alpha/m$. Applying the union bound gives
+\[
+\Pr\!\left(
+\exists i\in\mathcal P :
+\mu_i \ge \hat{\tau}_q
+\right)
+\le
+\sum_{i\in\mathcal P}\frac{\alpha}{m}
+=
+\alpha,
+\]
+and therefore
+\[
+\Pr\!\left(
+\forall i\in\mathcal P :
+\mu_i < \hat{\tau}_q
+\right)
+\ge
+1-\alpha.
+\]
+Hence, with probability at least $1-\alpha$, every parameter removed during the
+current pruning iteration is certified to have true mean sensitivity below the
+current empirical pruning frontier defined by the estimated sensitivity ranking.
+
+Two caveats are needed for this statement to be exact. First, $\hat{\tau}_q$ is
+itself estimated, so the guarantee above is conditional on the realised
+threshold; to make it unconditional we compute $\hat{\tau}_q$ from an
+independent set of probe batches, disjoint from those used to form
+$\{\hat{\mu}_i,\hat{\sigma}_i\}$, so that the intervals and the threshold are
+independent. Second, certification restricts the number of parameters that may
+be removed at a given iteration: the certified set $\mathcal P$ is strictly
+smaller than the nominal quantile set, so the target sparsity $\eta$ may not be
+reachable at fixed $\alpha$ and $t$. Algorithm~\ref{alg:sensitivity pruning}
+therefore accumulates additional probe batches when
+$|\mathcal P|$ is too small to make progress, and reports the achieved sparsity
+alongside the certification level rather than treating $\eta$ as guaranteed.
+
+\subsection{Disconnection Test}
+
+If
+\[
+\frac{\partial F(x_j)}{\partial \theta_i}=0
+\]
+for all \(x_j\in B\), where \(B\) denotes the mini-batch, then \(\theta_i\) has no observable influence on the model output and is therefore functionally disconnected from the output. Likewise, if
+\[
+\frac{\partial}{\partial x}
+\left(
+\frac{\partial F(x_j)}{\partial\theta_i}
+\right)=0
+\]
+for all \(x_j\in B\), then the parameter sensitivity does not vary with the input, suggesting that \(\theta_i\) is functionally disconnected from the input.
+
+In practice, we use the sample variance
+\[
+\widehat{\sigma}_{i,B}^{\,2}
+=
+\frac{1}{|B|-1}
+\sum_{x_j\in B}
+\left(
+s_i(x_j)-\bar s_B
+\right)^2,
+\qquad
+\bar s_B
+=
+\frac{1}{|B|}
+\sum_{x_j\in B}
+s_i(x_j),
+\]
+as a distributional proxy for the mixed derivative rather than estimating
+\[
+\frac{\partial}{\partial x}
+\left(
+\frac{\partial F(x)}{\partial\theta_i}
+\right)
+\]
+directly. A small value of \(\widehat{\sigma}_{i,B}^{\,2}\) indicates that the parameter sensitivity is nearly invariant across the sampled inputs. A parameter is declared functionally disconnected whenever
+\[
+\widehat{\sigma}_{i,B}^{\,2}<\tau_{d,\mathrm{input}},
+\]
+where \(\tau_{d,\mathrm{input}}>0\) is a user-specified threshold.
+
+The proposed criterion measures \emph{functional} rather than graph-theoretic connectivity. It does not determine whether a parameter lies on a directed path between the network input and output. Instead, it tests whether perturbing the parameter produces input-dependent changes in the model output. Consequently, the criterion should be interpreted as a statistical indicator of functional disconnection rather than a structural certificate.
+
+Since the decision is based on a finite mini-batch, the test is inherently statistical. Define the population sensitivity variance
+\[
+\sigma_i^2
+:=
+\operatorname{Var}_{x\sim\mathcal D}
+\bigl(s_i(x)\bigr),
+\]
+where \(\mathcal D\) denotes the data distribution. The empirical statistic
+\(\widehat{\sigma}_{i,B}^{\,2}\) is an estimator of \(\sigma_i^2\), and the decision rule above may therefore be viewed as the one-sided hypothesis test
+\[
+H_0:\sigma_i^2\ge\tau_{d,\mathrm{input}},
+\qquad
+H_1:\sigma_i^2<\tau_{d,\mathrm{input}}.
+\]
+Increasing \(\tau_{d,\mathrm{input}}\) makes the test more aggressive, increasing both the true positive and false positive rates, while decreasing \(\tau_{d,\mathrm{input}}\) has the opposite effect.
+
+Assuming the samples in \(B\) are independent draws from \(\mathcal D\) and that the random sensitivities $s_i$ satisfy a suitable concentration condition (e.g. boundedness or sub-Gaussian tails), standard concentration inequalities (e.g., Hoeffding's inequality for bounded
+variables or Bernstein's inequality for sub-exponential
+variables~\cite{boucheron2013concentration, vershynin2018hdp}) imply the existence of constants \(C,c>0\) such that
+\begin{equation}
+\mathbb P
+\left(
+\left|
+\widehat{\sigma}_{i,B}^{\,2}
+-
+\sigma_i^2
+\right|
+>
+\varepsilon
+\right)
+\le
+C\exp(-cn\varepsilon^2),
+\label{eq:variance_concentration}
+\end{equation}
+where \(n=|B|\). Thus, increasing the mini-batch size or improving input diversity makes the empirical statistic increasingly reliable.
+
+If a parameter satisfies
+\[
+\sigma_i^2\ge\tau_{d,\mathrm{input}}+\varepsilon,
+\]
+then a false positive can occur only when
+\(\widehat{\sigma}_{i,B}^{\,2}<\tau_{d,\mathrm{input}}\), giving
+\[
+\mathbb P
+\left(
+\widehat{\sigma}_{i,B}^{\,2}<\tau_{d,\mathrm{input}}
+\right)
+\le
+C\exp(-cn\varepsilon^2).
+\]
+Similarly, if
+\[
+\sigma_i^2\le\tau_{d,\mathrm{input}}-\varepsilon,
+\]
+then
+\[
+\mathbb P
+\left(
+\widehat{\sigma}_{i,B}^{\,2}\ge\tau_{d,\mathrm{input}}
+\right)
+\le
+C\exp(-cn\varepsilon^2).
+\]
+Hence, only parameters whose population variance lies close to the threshold are intrinsically difficult to classify.
+
+More generally, if
+\[
+|\sigma_i^2-\tau_{d,\mathrm{input}}|\ge\gamma
+\]
+for every tested parameter, then
+\[
+\mathbb P
+\bigl(
+\text{misclassification of }\theta_i
+\bigr)
+\le
+C\exp(-cn\gamma^2),
+\]
+and, for \(p\) tested parameters,
+\[
+\mathbb P
+\bigl(
+\text{at least one misclassification}
+\bigr)
+\le
+pC\exp(-cn\gamma^2).
+\]
+These bounds show that the procedure becomes increasingly reliable as the sample size and diversity increase, but they do not constitute a deterministic certificate of graph-theoretic disconnection.
+
+A confidence-based variant can replace the hard decision rule by constructing
+\[
+\widehat{\sigma}_{i,B}^{\,2}
+\pm
+t_{1-\alpha/(2m),\,t-1}
+SE_i.
+\]
+A parameter is declared disconnected only if the entire confidence interval lies below \(\tau\), retained if it lies entirely above \(\tau\), and otherwise marked inconclusive.
+
+The guarantees above depend on the sampled mini-batch being representative of the underlying data distribution. Rarely activated parameters, insufficient input diversity, or noisy or biased gradient estimates can all lead to misclassification. Accordingly, the proposed method should be regarded as a finite-sample statistical screening procedure for functional disconnection rather than an exact structural test.
+
+\subsection{$k$-hop Bottleneck Resolution}
+\label{subsec:khop}
+
+After tentative pruning, the active parameter graph may contain isolated connected components disconnected from the surviving computation graph. Rather than restoring every isolated component, we reconnect only those whose reintegration produces measurable propagation of functional sensitivity; the remainder are removed.
+
+Let
+\[
+G_t
+=
+G\!\left[\{i\in V:m_{t,i}=1\}\right]
+\]
+denote the active parameter graph after tentative pruning, and let
+\[
+\operatorname{Iso}(G_t)
+=
+\{C_1,\ldots,C_L\}
+\]
+be its isolated connected components. For an isolated component $C$, define the $k$-hop neighbourhood
+\[
+\mathcal N_k(C)
+=
+\{v\in V:\operatorname{dist}_G(v,C)\le k\}.
+\]
+
+Let $\mathcal A_t(C)$ denote the active non-isolated components reachable from $C$ within $\mathcal N_k(C)$ when previously pruned parameters may serve as bridge nodes. The admissible reconnection paths are
+\[
+\mathcal P_k(C)
+=
+\Bigl\{
+P=(v_0,\ldots,v_r):
+r\le k,\;
+v_0\in C,\;
+v_r\in A,\;
+A\in\mathcal A_t(C),\;
+P\subseteq\mathcal N_k(C)
+\Bigr\}.
+\]
+
+Given parameter scores $\{s_i\}_{i\in V}$, define the bottleneck value of a
+path $P$ as
+\[
+Q(P)=\min_{i\in P}s_i,
+\]
+and take as the strongest admissible reconnection path the maximiser
+\[
+P_C^\star
+\in
+\arg\max_{P\in\mathcal P_k(C)}
+Q(P),
+\]
+with the convention that no path is restored when
+$\mathcal P_k(C)=\emptyset$.
+
+After temporarily restoring $P_C^\star$, let $s_j^{(C)}$ denote the updated sensitivity of parameter $j$. The resulting sensitivity influence score is
+\[
+I_k(C)
+=
+\sum_{j\in\mathcal N_k(C)\setminus C}
+|s_j^{(C)}-s_j|.
+\]
+
+The isolated component is resolved according to
+\[
+\mathcal R_{k,\gamma}(C)
+=
+\begin{cases}
+\operatorname{Repair}_k(C), & I_k(C)>\gamma,\\
+\operatorname{Remove}(C), & I_k(C)\le\gamma,
+\end{cases}
+\]
+where $\gamma$ is the influence threshold.
+
+Applying this procedure to every isolated component yields the repaired mask
+\[
+\widehat m_t
+=
+\mathcal R_{k,\gamma}^{\text{all}}(m_t),
+\]
+in which each isolated component identified by the disconnection test has either been reconnected or removed according to its sensitivity influence score. Algorithm~\ref{alg:khop_sensitivity_influence_resolution} summarises the procedure.
+
+\begin{algorithm}[!ht]
+\caption{$k$-hop bottleneck resolution}
+\label{alg:khop_sensitivity_influence_resolution}
+\begin{algorithmic}[1]
+
+\Require Tentative mask $m_t$, graph $G$, scores $\{s_i\}$, hop radius $k$, influence threshold $\gamma$
+\Ensure Resolved mask $\widehat m_t$
+
+\State $\widehat m_t \gets m_t$
+\State Construct active graph $G_t$ from $\widehat m_t$
+
+\While{$\operatorname{Iso}(G_t)\neq\emptyset$}
+
+    \For{each $C\in\operatorname{Iso}(G_t)$}
+
+        \State Compute strongest admissible bottleneck path
+        \[
+        P_C^\star
+        \in
+        \arg\max_{P\in\mathcal P_k(C)}
+        \min_{i\in P} s_i
+        \]
+
+        \State Temporarily restore $P_C^\star$
+
+        \State Recompute local sensitivities $s_j^{(C)}$
+
+        \State Compute influence propagation score
+        \[
+        I_k(C)
+        =
+        \sum_{j\in\mathcal N_k(C)\setminus C}
+        \left|s_j^{(C)}-s_j\right|
+        \]
+
+        \If{$I_k(C)>\gamma$}
+            \State Apply $\operatorname{Repair}_k(C)$
+        \Else
+            \State Apply $\operatorname{Remove}(C)$
+        \EndIf
+
+    \EndFor
+
+    \State Update $G_t$
+
+\EndWhile
+
+\State \Return $\widehat m_t$
+
+\end{algorithmic}
+\end{algorithm}
+
+
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% \section*{References}
+
+
+% References follow the acknowledgments in the camera-ready paper. Use unnumbered first-level heading for
+% the references. Any choice of citation style is acceptable as long as you are
+% consistent. It is permissible to reduce the font size to \verb+small+ (9 point)
+% when listing the references.
+% Note that the Reference section does not count towards the page limit.
+% \medskip
+
+
+% {
+% \small
+
+
+% [1] Alexander, J.A.\ \& Mozer, M.C.\ (1995) Template-based algorithms for
+% connectionist rule extraction. In G.\ Tesauro, D.S.\ Touretzky and T.K.\ Leen
+% (eds.), {\it Advances in Neural Information Processing Systems 7},
+% pp.\ 609--616. Cambridge, MA: MIT Press.
+
+
+% [2] Bower, J.M.\ \& Beeman, D.\ (1995) {\it The Book of GENESIS: Exploring
+%   Realistic Neural Models with the GEneral NEural SImulation System.}  New York:
+% TELOS/Springer--Verlag.
+
+
+% [3] Hasselmo, M.E., Schnell, E.\ \& Barkai, E.\ (1995) Dynamics of learning and
+% recall at excitatory recurrent synapses and cholinergic modulation in rat
+% hippocampal region CA3. {\it Journal of Neuroscience} {\bf 15}(7):5249-5262.
+% }
+
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% \appendix
+
+% \section{Technical appendices and supplementary material}
+% Technical appendices with additional results, figures, graphs, and proofs may be submitted with the paper submission before the full submission deadline (see above). You can upload a ZIP file for videos or code, but do not upload a separate PDF file for the appendix. There is no page limit for the technical appendices. 
+
+% Note: Think of the appendix as ``optional reading'' for reviewers. The paper must be able to stand alone without the appendix; for example, adding critical experiments that support the main claims to an appendix is inappropriate. 
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% \newpage
+% \input{checklist.tex}
+
+
+\end{document}

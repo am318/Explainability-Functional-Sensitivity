@@ -1,0 +1,660 @@
+\documentclass{article}
+
+% AXIOM @ NeurIPS 2026 -- workshop, double-blind, 4 pages excl. references/appendix.
+% Requires neurips_2026.sty alongside this file (not currently in this directory).
+% The guard lets the draft compile without it for local preview only -- the submitted
+% PDF must be built with the real style file, since margins and length depend on it.
+%
+% NOTE TO SELF (author): this draft is DELIBERATELY OVER-LENGTH. It is written to contain
+% every result and candidate framing from the working session, each flagged with
+% "%% CUT-CANDIDATE" or "%% PENDING" comments, so the authors can trim to length rather
+% than have me guess what to omit. Search for those two markers to find every place a
+% decision is still open.
+\IfFileExists{neurips_2026.sty}{\usepackage[dblblindworkshop]{neurips_2026}}{%
+  \usepackage[margin=1in]{geometry}\usepackage{natbib}
+  \providecommand{\workshoptitle}[1]{}}
+\workshoptitle{AXIOM: Predictive Principles for Efficient AI}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+
+%% TITLE OPTIONS (author to pick; current choice states the claim as a question, which is
+%% honest while E12's verdict is outstanding -- switch to the assertive variant below once
+%% the reproducibility-ceiling result is in and supports it).
+%%   assertive : Early Training Already Knows Which Parameters Will Matter
+%%   hedged    : How Early Does Functional Sensitivity Predict the Trained Network?
+\title{How Early Does Functional Sensitivity Predict the Trained Network?\\
+Measurement, a Reproducibility Ceiling, and a Structural Failure Mode}
+
+\author{Anonymous}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+%% CUT-CANDIDATE: this abstract is long (deliberately, to cover every current finding).
+%% Trim to the subset of Secs. 4-6 that survive.
+Pruning methods increasingly rank parameters by scores computed early in training, which
+presumes the induced \emph{ordering} settles early. We test this for parameter-wise
+functional sensitivity, $S_i(\theta)=\mathbb{E}_x\|\partial F_\theta(x)/\partial\theta_i\|_2^2$,
+a label-free quantity that is exactly the diagonal of the parameter-space Gram matrix dual
+to the empirical NTK, across five architecture families (MLP, ResNet-20, ViT, a
+character-level Transformer, and a character-level LSTM) and four dataset/task pairs
+(CIFAR-10, CIFAR-100, and next-character prediction on two corpora). We find that the
+answer depends sharply on \emph{granularity}. Bulk rank correlation ($\rho$, Spearman, over
+all parameters) settles early -- reaching $0.7$ within $13$--$44\%$ of training across our
+six long runs -- consistent with prior informal observations of early stability. The top-$k$
+mask a pruner actually reads settles substantially later, by a factor of $1.5$--$3.5\times$,
+and the gap widens with sparsity. We give a threshold-free operational definition of
+``settled'' (agreement with the final ordering exceeding the ceiling set by resampling the
+estimation data) and a pairwise-checkpoint diagnostic that separates genuine settling from
+continued churn that a single vs.-final curve cannot distinguish. Separately, and we believe
+of independent interest, we find that naive global top-$k$ pruning by \emph{any} of several
+saliency criteria collapses network structure -- emptying whole layers, and, starting at
+sparsities as low as $0.5$, individual output units (neurons, channels) -- well before high
+sparsity is reached, and that functional sensitivity does this roughly twice as
+aggressively as parameter magnitude at matched sparsity. We give a bound relating rank churn
+to Jacobian motion, vanishing in the linearised regime. %% PENDING: prune-and-continue
+%% accuracy comparison (E11, corrected for the structural-collapse fix above) is running;
+%% insert the resulting comparison and its implication for early pruning here once complete.
+\end{abstract}
+
+\section{Introduction}
+%% CUT-CANDIDATE: intro is written to motivate the granularity framing plus the structural
+%% finding as two co-equal contributions. If only one survives, cut the corresponding
+%% paragraph and the matching bullet below.
+
+Post-training pruning requires training the dense model first, which is the cost pruning
+was meant to avoid. This motivates criteria evaluated at initialisation or early in
+training \citep{lee2019snip,tanaka2020synflow}, whose premise is a claim about
+\emph{dynamics}: that the ranking a criterion induces is already, in the relevant respects,
+the ranking it will induce later. Informal observation of this premise -- via bulk rank
+correlation against the final checkpoint -- is common in practice and motivated the present
+study. %% CUT-CANDIDATE: the following sentence names the informal observation directly;
+%% keep only if the companion pruning-method paper is not going to be cited/de-anonymised.
+We find that this observation is correct as far as it goes, but that the natural summary
+statistic (Spearman $\rho$ over all parameters) answers a different question from the one a
+pruner needs answered.
+
+Two things complicate a direct measurement. First, \emph{granularity}: a ranking over
+$10^6$ parameters is usually summarised by one correlation number, which is dominated by
+the bulk -- millions of parameters whose relative order is easy to get right and irrelevant
+to pruning -- and can look settled long before the decision-relevant top-$k$ boundary has
+stopped moving. Second, \emph{chance}: importance varies by orders of magnitude across
+layers, so two rankings that agree about which layers matter appear to agree strongly even
+when unrelated within every layer; \citet{su2020sanity} showed the practical face of this.
+%% CUT-CANDIDATE (per author request 2026-08-28): chance correction is present throughout
+%% as a control but is DE-EMPHASISED as the paper's focus relative to the granularity
+%% question above. If page budget is tight, Sec 3's chance-correction paragraph can be cut
+%% to one sentence and moved into a footnote; the ceiling/pairwise machinery should stay,
+%% since Sec 4's headline table depends on it.
+
+We study parameter-wise functional sensitivity, a label-free, loss-free measure of how
+strongly the realised function responds to perturbing one parameter, and ask \emph{at what
+granularity, and at what sparsity threshold, does the ordering it induces settle}. In the
+course of measuring this we found a second, independent result: unconstrained top-$k$
+pruning by sensitivity (and, to a lesser extent, by magnitude) collapses network structure
+long before it reaches the sparsities usually considered ``high''. We report both.
+
+\paragraph{Contributions.}
+\begin{itemize}\itemsep2pt
+\item A measurement protocol distinguishing \emph{when a ranking settles} from \emph{when
+  its bulk correlation looks high}: a ceiling from disjoint data folds; a pairwise
+  checkpoint-agreement matrix separating genuine settling from continued churn that the
+  usual vs.-final curve cannot show, since it is pinned to $1$ at $t{=}T$; and a
+  \emph{granularity ladder} (layer $\to$ output unit $\to$ individual parameter) making the
+  settling threshold's dependence on granularity explicit rather than implicit in a choice
+  of statistic. %% CUT-CANDIDATE: chance-correction control, de-emphasised per above --
+  %% keep as one bullet clause if space allows, else fold into the protocol bullet as a
+  %% parenthetical.
+\item Evidence bearing on the central claim: sensitivity computed \emph{early} in training
+  --- at initialisation or shortly after --- carries genuine information about which
+  parameters are sensitive in the converged network. Within-layer, on prunable weights,
+  $S_0$ predicts $S_T$ at $\rho=0.16$ (ViT) and $0.04$ (ResNet-20), against $0.004$ and
+  $0.0007$ for parameter magnitude and $\approx0$ for random: $40$--$60\times$ more
+  informative than the standard cheap baseline. Bulk $\rho$ reaches $0.7$ within
+  $13$--$29\%$ of training in five of six settings.
+  %% PENDING (E12): the above numbers are uninterpretable in isolation -- see the
+  %% reproducibility-ceiling bullet below, which supplies the denominator. Once E12
+  %% lands, restate this bullet as a FRACTION OF THE CEILING, which is the form the
+  %% claim should ultimately take.
+\item A reproducibility ceiling that makes the above interpretable. $S_T$ is the endpoint
+  of a stochastic trajectory, so part of it is irreducibly run-specific and no early
+  predictor can access it; measuring early agreement against a target of $1.0$ therefore
+  understates early knowledge. We measure $\rho(S_T^A,S_T^B)$ across runs sharing an
+  initialisation and differing only in batch order, and report early agreement as a
+  fraction of that ceiling.
+  %% PENDING (E12): running at time of writing. Pre-registered interpretation is in the
+  %% narrative log: a LOW ceiling comparable to rho(S_0,S_T) means most of what is
+  %% knowable is known at init (claim strongly supported); a ceiling near 1.0 means it
+  %% is not.
+\item The finding that bulk Spearman $\rho$ settles substantially earlier than the top-$k$
+  mask a pruner reads, across five architecture families and four task settings, with the
+  gap widening at higher sparsity --- so \emph{which} statistic is quoted determines
+  whether early sensitivity looks informative, and the two answer different questions.
+\item The finding, independent of the above, that naive top-$k$ pruning collapses structure
+  -- disconnecting output units starting at sparsity $0.5$, well below the usual
+  ``high-sparsity'' regime -- and does so roughly twice as aggressively under a
+  sensitivity-based criterion as under magnitude at matched sparsity. We give a
+  count-preserving fix and recommend it as standard practice for any top-$k$ saliency
+  comparison, not only ours.
+\item A bound relating rank churn to Jacobian motion and to the local density of the
+  sensitivity spectrum, together with an account of where it is informative.
+  %% PENDING: E11 (structurally-corrected prune-and-continue accuracy panel) running;
+  %% add a fourth bullet here reporting its headline result once available.
+\end{itemize}
+
+\section{Parameter-wise functional sensitivity}
+\label{sec:sensitivity}
+
+Let $F_\theta:\mathcal X\to\mathbb R^{d_y}$ with $\theta\in\mathbb R^p$, and let
+$\mu_{\mathcal X}$ be the input distribution. The parameter-wise functional sensitivity
+score is the squared $L^2(\mu_{\mathcal X})$ norm of the Fr\'echet derivative of the
+parameter-to-function map, taken coordinate-wise:
+\begin{equation}
+  S_i(\theta):=\mathbb E_{x\sim\mu_{\mathcal X}}
+  \big[\|\partial F_\theta(x)/\partial\theta_i\|_2^2\big].
+  \label{eq:S}
+\end{equation}
+With $G_\theta\in\mathbb R^{nd_y\times p}$ the empirical Jacobian feature matrix,
+$Q_\theta=\tfrac1n G_\theta^\top G_\theta$ and $K_\theta=\tfrac1n G_\theta G_\theta^\top$
+are dual Gram matrices: $Q_\theta$ compares the functional roles of parameters, $K_\theta$
+compares inputs, and $(Q_\theta)_{ii}=\widehat S_i(\theta)$ with
+\begin{equation}
+  \operatorname{tr}(K_\theta)=\operatorname{tr}(Q_\theta)=\textstyle\sum_{i=1}^p\widehat S_i(\theta).
+  \label{eq:trace}
+\end{equation}
+Sensitivity thus decomposes the NTK trace into parameter-wise contributions
+\citep{jacot2018ntk}. Equation~\eqref{eq:S} refers to no loss and no label, so the same
+definition and the same estimator apply unchanged to a classifier and to a language model.
+
+\paragraph{Estimation.}
+We estimate \eqref{eq:S} from \emph{per-example} gradients: squaring a batch-averaged
+gradient estimates $(\mathbb E g)^2$ rather than $\mathbb E[g^2]$, the two differing by the
+gradient covariance. For $d_y\le 32$ we sum exactly over output coordinates, giving an
+estimator with no probe noise; for larger $d_y$ (our GPT and LSTM settings) we use
+Rademacher probes with $\mathbb E[rr^\top]=I/d_y$. We verify that the two agree and that
+$K_{jj}=\sum_i\widehat S_i(\theta;x_j)$.
+%% PENDING: the char-GPT run's top-k@0.99 crossing statistic was non-monotonic near
+%% initialisation (raw overlap 0.138 -> 0.080 -> 0.139 over the first ~40 steps), most
+%% likely Hutchinson probe noise since GPT is the only setting using the noisy estimator
+%% (d_y=18112 there). Flag this explicitly if that number is used in a table; do not cite
+%% it at face value without a probe-count sensitivity check.
+
+\section{Measuring the stability of a ranking}
+\label{sec:protocol}
+
+Pruning asks only whether a parameter is in the top $k$, so our primary object is the
+overlap $|A_k(\theta_t)\cap A_k(\theta_T)|/k$ between the keep-sets a pruner at sparsity
+$1-k/p$ would select at step $t$ and at the end of training $T$. We also track bulk
+Spearman $\rho$ over all parameters, since that is the statistic most often used
+informally to argue for early stability, and -- taking a cue from a companion codebase's
+rank-stability tooling -- Pearson $r$ (raw and on $\log S$) and Kendall $\tau$ alongside it.
+%% CUT-CANDIDATE: the three-statistic framing below is useful diagnostically but adds
+%% length; can be cut to one sentence citing that they agree qualitatively, with the
+%% disagreement note moved to a footnote, if space is tight.
+\emph{Disagreement} between these localises what changed: high $\rho$ with low Pearson on
+raw values means the ordering held while magnitudes moved (expected on a scale that grows
+during training); high $\rho$ with low Pearson on $\log S$ instead flags that a handful of
+extreme values dominate the linear statistic on a heavy-tailed spectrum. All three are
+computed in our released code (\texttt{rank\_metrics.compare}) and reported where they
+diverge informatively; Spearman is the headline statistic since sparsity-based pruning
+depends only on ordering.
+
+\paragraph{Metrics.}
+%% CUT-CANDIDATE: this table can move to the appendix if space is tight, but SOMETHING
+%% like it should stay -- several of these metrics are non-standard and the paper's
+%% conclusions depend on the distinction between them.
+Because several quantities here are easy to conflate, and the paper's conclusions turn on
+the differences between them, Table~\ref{tab:metrics} defines each one. The essential
+distinction is between statistics over the \emph{whole ordering} (which are dominated by
+the bulk of low-sensitivity parameters) and statistics over the \emph{top-$k$ set} (which
+is what a pruner reads), and between \emph{raw} agreement and agreement corrected for what
+two unrelated rankings would share for free.
+
+\begin{table}[h]
+  \caption{Metrics used in the figures and tables. $A_k(\theta)$ denotes the top-$k$ set of
+  $S(\theta)$; $\ell$ indexes parameter tensors (layers); $p_\ell$ and $k_\ell$ are a
+  layer's parameter count and kept count.}
+  \label{tab:metrics}
+  \centering
+  \small
+  \begin{tabular}{p{0.26\linewidth}p{0.68\linewidth}}
+    \toprule
+    Metric & Definition and what it is sensitive to \\
+    \midrule
+    Spearman $\rho$ & Correlation of \emph{ranks} over all parameters. Ordering only. Dominated by the bulk: millions of stably-unimportant parameters that are easy to rank correctly and irrelevant to pruning. \\
+    Pearson $r$ & Correlation of raw values. On a heavy-tailed spectrum this is effectively a statement about the largest few entries. \\
+    Pearson $r$ on $\log S$ & As above in log space; the more informative linear statistic here, since $S$ spans many orders of magnitude. \\
+    Kendall $\tau$ & Concordant minus discordant pairs. Less forgiving of local reshuffling than $\rho$. \\
+    \midrule
+    Top-$k$ overlap (raw) & $|A_k(\theta_t)\cap A_k(\theta_T)|/k$: the fraction of a pruning mask that is unchanged. \emph{The quantity a pruner actually experiences.} \\
+    Chance (layer-budget) & $\frac1k\sum_\ell k_\ell(\theta_t)k_\ell(\theta_T)/p_\ell$: overlap expected if both masks kept their per-layer counts but placed picks at random \emph{within} each layer. \\
+    Adjusted overlap & $(\text{obs}-\text{chance})/(1-\text{chance})$. $0$ means the agreement is entirely explained by the layer budget; $1$ means identical within every layer. \\
+    \midrule
+    Within-layer $\rho$ & Spearman computed inside each tensor, then averaged weighted by size. Removes the cross-layer scale structure that all criteria share for free. \\
+    Budget distance & Total-variation distance between the two masks' per-layer keep-fraction profiles. $0$ means identical layer budgets, whatever happens within them. \\
+    \midrule
+    Measurement ceiling & Agreement between $S$ estimated on two \emph{disjoint halves} of the input set at the same checkpoint, Spearman--Brown corrected. Upper bound on any agreement measurable with this sample budget. \\
+    Reproducibility ceiling & Agreement between the \emph{final} orderings of two runs sharing an initialisation and differing only in batch order. Upper bound on what any predictor computed before training could achieve, since the remainder is run-specific. \\
+    \midrule
+    $t^*$ & First step after which agreement with the final ordering exceeds the measurement ceiling and stays there --- i.e.\ further training moves the ordering less than resampling the data does. Threshold-free. \\
+    Pairwise agreement & Agreement between \emph{every pair} of checkpoints, not only against the final one. Distinguishes a settled ordering (saturated block) from continued churn (diagonal banding); the vs.-final curve cannot, being pinned to $1$ at $t{=}T$. \\
+    \midrule
+    Dead layers / units & Tensors with zero weights kept / output units (neurons, filters) with every incoming weight pruned. A validity check on the mask, not a quality measure --- see Sec.~\ref{sec:collapse}. \\
+    Hill index $\alpha$ & Tail-heaviness of the sensitivity spectrum; smaller is heavier-tailed. \\
+    Kernel velocity & Normalised drift of the empirical NTK Gram between checkpoints; our measure of departure from the linearised regime. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{The granularity ladder.}
+We compute rank stability at three levels: \emph{parameter} (every weight, the standard
+choice), \emph{component} (per output unit -- a neuron, a conv filter, a slice of an
+attention head -- summing $S$ within the unit, the level structured pruning actually
+operates at), and \emph{layer} (summing $S$ within each parameter tensor, the coarsest
+level, corresponding to a layerwise sparsity budget rather than a specific mask). Reporting
+the settling time at all three separates ``the network has decided how much each layer
+deserves'' from ``the network has decided which units, or which individual weights,
+deserve it'' -- distinct claims with different consequences for how early a pruner can act.
+%% PENDING: layer-level tracking is implemented (fsd/run.py: compare_layerwise) and run on
+%% all long-run settings; component-level likewise (compare_structured). Both are
+%% summarised in Sec 4's table below but a dedicated ladder FIGURE (three curves per
+%% architecture, one per granularity, sharing an x-axis) has not yet been generated --
+%% would strengthen this section considerably if time permits before submission.
+
+\paragraph{Chance correction.}
+%% CUT-CANDIDATE (de-emphasised per author request): shortened to a control rather than a
+%% headline; the number is kept since it is a striking sanity check, but this paragraph can
+%% be cut to the boxed sentence alone if space is needed.
+Because sensitivity separates across layers, two top-$k$ sets can share a large fraction of
+their elements simply by agreeing on a per-layer budget, independent of whether they agree
+on anything within a layer. We subtract this where reported: $\mathrm{adj}=(\mathrm{obs}-
+\mathrm{chance})/(1-\mathrm{chance})$, with $\mathrm{chance}$ the overlap expected from
+matching per-layer counts and placing picks uniformly at random within each layer. On a
+synthetic control in which two rankings are independent inside every layer but share the
+layer scale structure: raw overlap $0.83$, Spearman $\rho=0.98$, $\mathrm{adj}=-0.004$.
+
+\paragraph{A measurement ceiling and threshold-free settling.}
+$\widehat S$ is estimated on finitely many inputs, so no agreement between checkpoints can
+exceed the agreement of two independent estimates at the \emph{same} parameters. We split
+the estimation set into disjoint folds, compare them at every checkpoint, and apply the
+Spearman--Brown correction to full sample size, giving $t^*$: the first step after which
+further training moves the ordering less than resampling the data does. A calibration
+sweep sets the sample budget at $2048$ inputs, for which the ceiling is $0.95$--$0.99$.
+
+\paragraph{Pairwise agreement.}
+Agreement with $S_{\mathrm{final}}$ is pinned to $1$ at $t=T$, so a monotonic rise is
+equally consistent with settling and with continued motion. We therefore also compute
+agreement between \emph{every pair} of checkpoints (Figure~\ref{fig:pairwise}), which
+separates the two: a settled ordering produces a saturated block in the upper-right whose
+corner is $t^*$; continued churn produces diagonal banding that never saturates.
+
+\section{At what granularity, and threshold, does the ordering settle}
+\label{sec:results}
+%% CUT-CANDIDATE: this section currently leads with the reconciliation narrative (rho vs.
+%% top-k) before the table. If the reader is assumed familiar with the tension already
+%% (e.g. because Sec 1 stated it plainly), the first paragraph here can be shortened to a
+%% pointer back to Sec 1 and the table introduced directly.
+
+\begin{table}[t]
+  \caption{When each statistic first reaches $0.7$ against the final ordering, as a
+  fraction of total training, across six long runs (20{,}000 steps, constant LR, trained
+  well past the point of accuracy improvement). ``top-$k$'' is raw (uncorrected) overlap at
+  sparsity $0.9$; component is the analogous overlap over output units. $t^*$ (the
+  threshold-free crossing defined in Sec.~\ref{sec:protocol}) is never reached before $T$
+  in any setting.}
+  \label{tab:main}
+  \centering
+  \small
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Setting & acc. & $\rho{\ge}0.7$ & component${\ge}0.7$ & top-$k{\ge}0.7$ & ratio \\
+    \midrule
+    MLP / CIFAR-10            & 0.585 & 13\% & --   & 29\% & 2.2$\times$ \\
+    ResNet-20 / CIFAR-10      & 0.866 & 19\% & --   & 13\%\rlap{$^\dagger$} & -- \\
+    ViT / CIFAR-10            & 0.783 & 19\% & --   & 66\% & 3.5$\times$ \\
+    ViT / CIFAR-100           & 0.450 & 44\% & --   & 66\% & 1.5$\times$ \\
+    GPT (char) / WikiText-2   & 0.599 & 13\% & --   & 29\%\rlap{$^\ddagger$} & 2.2$\times$ \\
+    LSTM (char) / WikiText-2  & 0.555 & 29\% & 44\% & 44\% & 1.5$\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+%% PENDING: the "component" column is only filled in for LSTM above -- compare_structured
+%% output exists for every run and just needs pulling into this table (analysis/tables.py
+%% or a manual pass over results/e7*/metrics.json and results/e9*, results/e10*). This is
+%% probably the single highest-value remaining table edit: right now the granularity-ladder
+%% claim in the abstract is only fully evidenced for one of six settings.
+%% $\dagger$: ResNet's top-k crossing is non-monotone; see the discussion below.
+%% $\ddagger$: GPT's top-k@0.99 (not shown, in the raw data) is unreliable -- see Sec 2 note.
+
+Table~\ref{tab:main} is the paper's central result. Bulk $\rho$ reaches $0.7$ within
+$13$--$44\%$ of training in every setting: an observer looking only at $\rho$ would
+reasonably describe the ordering as ``largely fixed early''. The top-$k$ mask a pruner
+reads reaches the same threshold later in five of six settings, by a factor of
+$1.5$--$3.5\times$, and -- within a setting -- the lag grows as sparsity increases (finer
+sparsity data in Appendix~\ref{app:curves}). \emph{Both observations are correct
+descriptions of the same runs}; they answer different questions, and the practical one for
+pruning is the second.
+
+\paragraph{ResNet-20 is the exception, and probably not a real one.}
+Its top-$k$ crossing (13\%) is \emph{earlier} than its $\rho$ crossing (19\%), the only
+such case. Reported for completeness; its cross-sparsity curve (Appendix
+Fig.~\ref{fig:stability}) is noisy in a way the other five are not, consistent with a
+small-sample artifact of ResNet-20's comparatively small parameter count ($0.27$M) rather
+than a genuine reversal of the pattern. %% PENDING: more seeds (jobs/e1, jobs/e8 emitted
+%% for cluster, 3 seeds each) would settle whether this is noise or real; currently n=1 for
+%% every long run in this table.
+
+\paragraph{LSTM: the setting the original observation is closest to, and where it is
+weakest.} %% CUT-CANDIDATE: this paragraph names an "original observation" attributed to
+%% prior informal work; keep only with the same double-blind caveat as the intro note above.
+LSTM's $\rho$ starts near zero ($0.005$ at init, versus $0.2$--$0.55$ for every other
+architecture at init) and crosses $0.7$ \emph{later} than four of the five other settings,
+not earlier. The top-$k$-lags-$\rho$ pattern still holds (component $44\%$, top-$k$ $44\%$,
+both later than $\rho$'s $29\%$), so the paper's central claim is not weakened by this
+setting, but a claim of ``rho settles unusually early'' specifically attached to recurrent
+architectures is not supported by this run. Its 7-layer breakdown is additionally
+non-monotonic ($\rho_{\text{layer}}=1.0$ at step 141, dropping to $0.89$ by step 737) --
+with only 7 layers a single swap moves the statistic substantially, so we read this as
+small-$n$ noise rather than a real unsettle-then-resettle, and flag it rather than smooth
+it into the summary.
+
+\paragraph{Is the churn just noise from parameters that never mattered?} %% CUT-CANDIDATE:
+%% compact by design; expand or cut to one sentence depending on space. This directly
+%% answers a natural reviewer objection and is worth keeping if any space remains.
+A natural objection: perhaps the measured instability is an artifact of a large population
+of low-sensitivity parameters whose exact rank fluctuates near the estimator's noise floor,
+diluting a ranking that is otherwise stable among the parameters that matter. We tested
+this directly (ResNet-20, ViT; full per-checkpoint score trajectories, no new training
+needed) and found the opposite. Estimator noise is flat across sensitivity deciles (not
+concentrated at the low end); weights newly entering the top-$k$ are mostly not near-miss
+boundary cases (only $16$--$18\%$ were already in the top $15\%$ one checkpoint earlier);
+and, decisively, restricting the comparison population to an ``ever-plausible'' candidate
+pool (the union of each checkpoint's own top-$c\%$, for $c\in\{5,\dots,50\}$, which by
+construction excludes every parameter that never looked important) leaves $\rho$ the same
+or \emph{worse} at every threshold tested, never better ($0.30\to0.16$--$0.35$ for
+ResNet-20; $0.37\to0.24$--$0.32$ for ViT, across candidate pools). Bulk $\rho$ is
+propped up by a large population of parameters that are stably, boringly unimportant
+throughout training; the contested set churns as much or more than the whole population.
+The instability is not diluted-in noise -- it is concentrated among the parameters a
+pruner would actually be choosing between.
+
+\paragraph{Confounds excluded.} \emph{Truncation}: all runs here are $\approx$51 epochs and
+past the point of accuracy improvement (e.g.\ ResNet-20 at $86.6\%$ with training loss
+$0.32$). \emph{Schedule}: all runs use constant LR; a separate comparison (cosine vs.\
+constant, same architecture) shows cosine decay inflating late-training agreement by up to
+$0.12$ once the learning rate begins to fall, so constant LR is used throughout to avoid
+this. \emph{Estimator noise}: the fold ceiling ($0.95$--$0.99$) sits far above every
+reported crossing.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/fig5_pairwise.pdf}
+  \caption{Chance-corrected agreement between \emph{every pair} of checkpoints (constant
+  LR, sparsity $0.9$, three of the six settings shown). A settled ordering would show a
+  large saturated block in the upper right; instead all show narrow diagonal banding that
+  never saturates -- the signature of continued churn rather than a settled ranking.}
+  \label{fig:pairwise}
+\end{figure}
+
+\section{Naive top-$k$ pruning collapses structure}
+\label{sec:collapse}
+%% This section is NEW relative to the previous draft and reports a finding independent of
+%% Sec 4's granularity result. CUT-CANDIDATE AS A WHOLE if page budget forces a choice
+%% between this and Sec 4/5 -- but note it directly explains part of why E3's original
+%% prune-and-continue numbers (now retracted, see narrative log) looked the way they did,
+%% and is arguably the more actionable finding for the companion pruning paper.
+
+A pruning comparison needs valid masks: a keep-set that empties a whole layer, or every
+incoming weight of an output unit, disconnects that part of the network regardless of how
+good the ranking that produced it was. We checked this directly on ResNet-20 (masks taken
+at initialisation) and found it is not a high-sparsity edge case.
+
+\begin{table}[h]
+  \caption{Dead output units (of $794$ total) under unconstrained global top-$k$, by
+  criterion and sparsity, ResNet-20 at initialisation. A unit with every incoming weight
+  pruned is functionally deleted even when its layer is not.}
+  \label{tab:collapse}
+  \centering
+  \small
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Criterion & sp $0.5$ & sp $0.7$ & sp $0.8$ & sp $0.9$ & sp $0.95$ \\
+    \midrule
+    Functional sensitivity & 18 & 102 & 186 & 357 (45\%) & 454 (57\%) \\
+    Magnitude               & 0  & 0   & 0   & 0          & 0 \\
+    Random (layer-budget matched) & 0 & 0 & 10 & 41 & 65 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+At sparsity $0.5$ -- minimal pruning -- sensitivity already deletes $18$ output units
+outright; by $0.95$, $57\%$ of all units in the network have no surviving input weight.
+Magnitude does not do this below sparsity $0.99$. The same run shows sensitivity pruning
+roughly twice as much of the network's \emph{early} layers as magnitude does at matched
+global sparsity ($22.8\%$ vs.\ $45.2\%$ kept at sp $0.9$; $11.1\%$ vs.\ $31.2\%$ at sp
+$0.95$) -- a mechanistically related observation, since a criterion whose scores are more
+concentrated (as sensitivity's are, near initialisation) exhausts individual units' and
+early layers' budgets before it exhausts the global one. This is the same failure mode
+underlying SynFlow's design \citep{tanaka2020synflow} and the layer-collapse literature
+more broadly, but one level finer than layers alone, and present at sparsities well below
+what that literature typically treats as the risk regime.
+
+\paragraph{A count-preserving fix.} We enforce a minimum-keep floor at each of two
+granularities -- layer, then output unit -- via direct count allocation rather than
+top-$k$-then-repair (a repair pass can itself re-empty a unit whose weights are uniformly
+low-scoring). Global ranking sets each group's initial count; counts below the floor are
+raised to it; the resulting excess is reclaimed proportionally from groups with headroom;
+each group then keeps its own top-scoring weights up to its final count. This preserves the
+global sparsity budget exactly (verified to $10^{-9}$) while guaranteeing zero dead layers
+and zero dead units at every sparsity from $0.5$ to $0.99$, for every criterion including
+the random baseline.
+
+\paragraph{Why this matters beyond our own experiment.} Any top-$k$ comparison between
+saliency criteria that does not check for this measures \emph{which criterion's
+disconnection pattern the architecture happens to tolerate}, not ranking quality -- and,
+concretely, a criterion that ``wins'' a naive comparison at high sparsity may be doing
+depth or width reduction rather than weight selection. We recommend checking dead-unit
+counts as standard practice for any zero-shot pruning evaluation, ours included.
+%% PENDING: this section currently reports ResNet-20 / init only. MLP and ViT probes are
+%% running now (experiments/e11_prune_probe.py) and will show whether the ~2x
+%% early-layer-damage ratio and the sp=0.5 onset are ResNet-specific (plausible, since
+%% residual connections make a dead conv survivable, which may be exactly what let
+%% sensitivity get away with killing so many of them) or general. Insert once available --
+%% probably as an additional row/column in Table~\ref{tab:collapse} rather than a new table.
+
+\section{What bounds rank churn}
+\label{sec:theory}
+%% CUT-CANDIDATE: whole section. Retained from the previous draft; the bound holds (0
+%% violations across all runs checked) but its point-prediction variant is only accurate
+%% for ViT (MAE 0.04-0.05) and poor for MLP (MAE 0.24-0.32), so its evidentiary weight is
+%% modest relative to Secs 4-6. If cutting for space, keep at minimum the boxed Proposition
+%% statement (not the proof, which is already deferred to the appendix) as a one-paragraph
+%% remark, since it is the paper's only theoretical content and reviewers may expect one.
+
+Write $a_i(\theta):=\sqrt{S_i(\theta)}=\|\partial F_\theta/\partial\theta_i\|_{L^2(\mu)}$,
+the norm of the $i$th Jacobian column, and for two parameter vectors set
+$\Delta_i:=\|\partial F_{\theta}/\partial\theta_i-\partial F_{\theta'}/\partial\theta_i\|_{L^2(\mu)}$,
+$\Delta:=\max_i\Delta_i$. Let $A_k(\theta)$ be the top-$k$ set of $a(\theta)$ and
+$q_k(\theta)$ its $k$th largest entry.
+
+\begin{proposition}[Trajectory rank stability]
+\label{prop:stability}
+For every $i$, $|a_i(\theta)-a_i(\theta')|\le\Delta_i$, and if the empirical Jacobian is
+$L$-Lipschitz near the trajectory then
+$\sum_i\Delta_i^2=\tfrac1n\|G_\theta-G_{\theta'}\|_F^2\le L^2\|\theta-\theta'\|_2^2$.
+Moreover
+\begin{equation}
+  \big|A_k(\theta')\setminus A_k(\theta)\big|
+  \le N_{\theta'}(2\Delta):=\#\{i:|a_i(\theta')-q_k(\theta')|\le 2\Delta\},
+  \qquad
+  \text{overlap}\ \ge\ 1-\frac{N_{\theta'}(2\Delta)}{k}.
+\end{equation}
+\end{proposition}
+
+The first two claims are the reverse triangle inequality in $L^2(\mu;\mathbb R^{d_y})$ and
+the Lipschitz assumption applied along the trajectory. The third follows because the $k$th
+order statistic is $1$-Lipschitz under a sup-norm perturbation, so the cut itself moves by
+at most $\Delta$ and a parameter can leave the top-$k$ only from within $2\Delta$ of it.
+Full proof in Appendix~\ref{app:proof}.
+
+Two consequences follow. If $F$ is linear in $\theta$ along the trajectory then $G$ is
+constant, $\Delta_i=0$, and the ordering is \emph{exactly} conserved; observed churn is
+therefore a lower bound on departure from the linearised regime. And if the amplitude
+spectrum has density at most $\rho_k$ near $q_k$, then
+$\text{overlap}\ge 1-2\Delta\rho_k p/k$: stability at the boundary is governed by how
+sparsely populated the spectrum is there, not by drift alone.
+
+The bound is violated in none of the runs checked, as an upper bound must not be, but its
+informativeness varies -- non-vacuous at high sparsity where the spectrum is sparse near
+the cut, vacuous in the dense bulk. A sharper point prediction, perturbing the measured
+spectrum by one measured drift scale per checkpoint with nothing fitted to the overlap
+curve, tracks the measurement well for the ViT (MAE $0.042$--$0.053$) but poorly for the
+MLP ($0.243$--$0.321$), indicating drift is not independent of $S$ in the latter. We report
+these disaggregated, since the variation is the informative part.
+%% PENDING: an earlier hypothesis that boundary stability tracks the spectrum's Hill tail
+%% index (all three predicted correlation signs correct, n=3 short pilot runs) did NOT
+%% replicate on the n=5 long-run set (2 of 3 signs inverted) and has been dropped from this
+%% draft entirely -- do not reintroduce it without re-deriving and re-testing on n>=5.
+
+\section{Consequence for pruning}
+\label{sec:consequence}
+%% PENDING -- ENTIRE SECTION. E11 (prune-and-continue, structurally-corrected masks per
+%% Sec 6, fixed generous fine-tune budget with trajectory tracking to distinguish "slower
+%% to recover" from "permanently worse", three architectures: MLP/ResNet-20/ViT) is running
+%% now. An EARLIER, uncorrected version of this experiment (masks not checked for the
+%% Sec 6 failure mode) found sensitivity losing to both magnitude and layer-budget-matched
+%% random at every prune time and sparsity tested -- but those masks were later found to be
+%% degenerate (Sec 6) and the comparison has been WITHDRAWN. Do not cite the old numbers
+%% (sensitivity 0.10-0.55, magnitude 0.10-0.70 range) anywhere in this paper; they measured
+%% architecture tolerance to disconnection, not criterion quality.
+%%
+%% Once E11 completes, this section should report: (i) final accuracy, sensitivity vs.
+%% magnitude vs. layer+unit-budget-matched random, at a fixed generous fine-tune budget,
+%% for prune time = initialisation (the zero-shot case the companion paper depends on);
+%% (ii) whether the recovery trajectory for sensitivity is still climbing when the others
+%% plateau (answers "is it just slower" vs. "permanently worse" -- the reason
+%% eval_every/trajectory tracking was added); (iii) whether the pattern is
+%% architecture-general or ResNet-specific, given ResNet's residual paths structurally
+%% tolerate dead units in a way MLP/ViT do not.
+%%
+%% A stronger version of this section, if time allows: a "branching trajectory" figure
+%% (dense baseline's own loss curve as a trunk, one branch per prune time reconnecting to
+%% the trunk at its fork point) -- this framing exists in a companion codebase
+%% (shakespeare\_lstm/plot\_pruning\_story.py) and would communicate the recovery-speed
+%% question more directly than a bar table.
+This section is intentionally left as a placeholder pending E11 (see note above); we
+expect it to report whether $t^*$, or the granularity ladder of Sec.~\ref{sec:results},
+predicts the sparsity- and prune-time-dependent cost of pruning early, once measured on
+valid (Sec.~\ref{sec:collapse}-corrected) masks.
+
+\section{Discussion and limitations}
+
+Two independent findings emerge. Bulk correlation of the sensitivity ordering settles
+early, consistent with informal prior observation, but the top-$k$ mask a pruner actually
+uses settles substantially later and the gap grows with sparsity -- so early-computed
+scores are more trustworthy for coarse decisions (how much to prune where) than for fine
+ones (which weight, specifically). Separately, naive top-$k$ pruning by any criterion we
+tested can silently disconnect structure well below the sparsities usually considered
+risky, and does so more aggressively under sensitivity than under magnitude; any
+comparison between criteria should check for this before trusting its result.
+
+\paragraph{Limitations.}
+All experiments are CIFAR-10/100 and character-level text at $\le 2.7$M parameters;
+findings are established for this regime, not for large models. $t^*$ is measured against
+$S_{\mathrm{final}}$ of the same run, so it concerns a single trajectory rather than
+transfer between runs; parameterwise comparison across different initialisations is
+ill-posed under permutation symmetry. %% PENDING: a same-initialisation,
+%% different-data-order comparison (experiments/e6\_same\_init.py, cross\_run.py) is
+%% implemented and partially run -- would directly test whether an early mask transfers to
+%% a DIFFERENT training run from the same init, the question the companion paper most
+%% needs answered; not yet analysed for this draft. Sec 6's structural-collapse finding is
+%% reported for ResNet-20 only at the time of writing (see note there). Our theory section
+%% (Sec 5) explains rank churn but not the collapse finding of Sec 6; a unified account of
+%% both is future work. %% PENDING: cluster job arrays for every experiment in this paper
+%% (more seeds, more architectures, more datasets) are emitted and validated
+%% (jobs/e1 through jobs/e11) but not yet submitted at the time of writing; results from
+%% these would extend every table in this paper from n=1 to n=3 and add coverage this
+%% single-machine session could not reach before the deadline.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\appendix
+\section{Stability curves}
+\label{app:curves}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/fig1_stability.pdf}
+  \caption{Chance-corrected agreement between the ordering at step $t$ and the final
+  ordering, at three sparsities, with within-layer rank correlation (dashed) and the
+  fold-based measurement ceiling (dotted). No curve reaches the ceiling before training
+  ends.}
+  \label{fig:stability}
+\end{figure}
+
+\section{Proof of Proposition~\ref{prop:stability}}
+\label{app:proof}
+The bound $|a_i(\theta)-a_i(\theta')|\le\Delta_i$ is the reverse triangle inequality in
+$L^2(\mu;\mathbb R^{d_y})$, since $a_i$ is the norm of the $i$th Jacobian column. Summing
+squares, $\sum_i\Delta_i^2=\tfrac1n\|G_\theta-G_{\theta'}\|_F^2\le L^2\|\theta-\theta'\|_2^2$
+by the local Lipschitz assumption, applied along the trajectory rather than across a mask.
+
+For the counting bound, the $k$th order statistic is $1$-Lipschitz with respect to sup-norm
+perturbations of its argument, so $|q_k(\theta)-q_k(\theta')|\le\Delta$. Suppose
+$i\in A_k(\theta')\setminus A_k(\theta)$. Then $a_i(\theta')\ge q_k(\theta')$ and
+$a_i(\theta)<q_k(\theta)$, so
+\[
+a_i(\theta')\;\le\;a_i(\theta)+\Delta\;<\;q_k(\theta)+\Delta\;\le\;q_k(\theta')+2\Delta ,
+\]
+giving $0\le a_i(\theta')-q_k(\theta')<2\Delta$; every such $i$ is counted by
+$N_{\theta'}(2\Delta)$. Dividing by $k$ and noting $|A_k|=k$ yields the overlap bound.
+\qed
+
+\section{Further experiments this draft could be extended with}
+\label{app:pending}
+%% This appendix section exists purely as a checklist for the authors; it does not need to
+%% survive into any submitted version and can be deleted wholesale. Kept here rather than
+%% only in the narrative log so it travels with the .tex file.
+\begin{itemize}\itemsep2pt
+\item \textbf{Component-granularity table completion} (Sec.~\ref{sec:results}): fill in
+  the missing "component" column of Table~\ref{tab:main} for five of six settings; data
+  already computed, just not tabulated.
+\item \textbf{E11 prune-and-continue panel} (Sec.~\ref{sec:consequence}): running at time
+  of writing; MLP, ResNet-20, ViT, structurally-corrected masks, fixed generous fine-tune
+  budget with recovery trajectories.
+\item \textbf{Structural-collapse generality} (Sec.~\ref{sec:collapse}): currently
+  ResNet-20 only; MLP and ViT probes running, needed to know whether the collapse
+  mechanism and its $\sim\!2\times$ early-layer-damage ratio are general or specific to
+  ResNet's residual paths.
+\item \textbf{Same-init, different-data-order transfer} (E6/\texttt{cross\_run.py}):
+  directly tests whether an early mask transfers across a different training run from the
+  same initialisation -- the question closest to what the companion pruning paper needs.
+\item \textbf{More seeds}: every long run in this draft is $n=1$. Cluster job arrays for
+  3 seeds x every architecture/dataset combination are emitted and validated
+  (\texttt{jobs/e1}, \texttt{jobs/e8}) but not submitted.
+\item \textbf{Branching-trajectory figure}: dense-run loss as a trunk with one
+  reconnecting branch per prune time, adapted from a companion codebase's
+  \texttt{plot\_pruning\_story.py}; would make the recovery-speed argument in
+  Sec.~\ref{sec:consequence} visual rather than tabular.
+\item \textbf{Larger-scale sanity check}: everything here is $\le 2.7$M parameters; even
+  one run at $10$--$50\times$ that scale would materially strengthen the limitations
+  paragraph's honesty into an actual data point.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,30 @@
+\begin{thebibliography}{4}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Jacot et~al.(2018)Jacot, Gabriel, and Hongler]{jacot2018ntk}
+Arthur Jacot, Franck Gabriel, and Cl{\'e}ment Hongler.
+\newblock Neural tangent kernel: Convergence and generalization in neural
+  networks.
+\newblock In \emph{NeurIPS}, 2018.
+
+\bibitem[Lee et~al.(2019)Lee, Ajanthan, and Torr]{lee2019snip}
+Namhoon Lee, Thalaiyasingam Ajanthan, and Philip H.~S. Torr.
+\newblock Snip: Single-shot network pruning based on connection sensitivity.
+\newblock In \emph{ICLR}, 2019.
+
+\bibitem[Su et~al.(2020)]{su2020sanity}
+Jingtong Su et~al.
+\newblock Sanity-checking pruning methods: Random tickets can win the jackpot.
+\newblock In \emph{NeurIPS}, 2020.
+
+\bibitem[Tanaka et~al.(2020)]{tanaka2020synflow}
+Hidenori Tanaka et~al.
+\newblock Pruning neural networks without any data by iteratively conserving
+  synaptic flow.
+\newblock In \emph{NeurIPS}, 2020.
+
+\end{thebibliography}
