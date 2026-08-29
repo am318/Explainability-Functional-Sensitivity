@@ -1,0 +1,6 @@
+
+[mlp] grid: prune steps [0, 800, 2000, 4000] (['0%', '10%', '25%', '50%'] of 8000) x sparsities [0.2, 0.5, 0.7, 0.9] x ['sensitivity', 'random', 'magnitude']
+  5/48 cells already computed, resuming the rest
+  step 0 (9s elapsed): 7 cells to fill
+/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:297: UserWarning: resource_tracker: There appear to be 40 leaked semaphore objects to clean up at shutdown: {'/mp-d3y399cz', '/mp-d2avq_xt', '/mp-p0v7u8vr', '/mp-cb9_2il_', '/mp-2v05wt_e', '/mp-dbfjfb_r', '/mp-95j3ule4', '/mp-zamu5mn5', '/mp-z8wv8yas', '/mp-s1cwohkn', '/mp-3tod23l9', '/mp-21ixldtj', '/mp-ccts9s8l', '/mp-9odki8u1', '/mp-qf3akys7', '/mp-8hfrg0j4', '/mp-o9xn1ldq', '/mp-hv1d1xid', '/mp-hipyl_wd', '/mp-kj5eii8m', '/mp-wfz9dkrg', '/mp-z2120n4i', '/mp-lwk8n37r', '/mp-a8oq580m', '/mp-imtpmv30', '/mp-ngro7f5u', '/mp-b20p90_9', '/mp-4i18unhd', '/mp-e4xzl_nx', '/mp-amhja0nq', '/mp-cyo8dk_d', '/mp-i3mwbilv', '/mp-6wpo_eb9', '/mp-zw_p9juc', '/mp-g3zgacfg', '/mp-bw9hf2zq', '/mp-ek0_u4iq', '/mp-xsm2ha7n', '/mp-q7v80gfg', '/mp-ls7_5tzf'}
+  warnings.warn(

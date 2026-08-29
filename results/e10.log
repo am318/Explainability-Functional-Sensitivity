@@ -1,0 +1,32 @@
+=== starting e10 (LSTM) ===
+
+[1/1] e10-lstm-9f04306a79
+[e10-lstm-1eb02ce4f1] lstm on text | 0.42M params (0.35M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in   8.8s  (estimator=hutchinson, d=18112)
+  step      1  sensitivity measured in   7.6s  (estimator=hutchinson, d=18112)
+  step      2  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step      3  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step      5  sensitivity measured in   8.6s  (estimator=hutchinson, d=18112)
+  step      8  sensitivity measured in   7.5s  (estimator=hutchinson, d=18112)
+  step     12  sensitivity measured in   9.2s  (estimator=hutchinson, d=18112)
+  step     18  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step     27  sensitivity measured in   8.0s  (estimator=hutchinson, d=18112)
+  step     41  sensitivity measured in   7.8s  (estimator=hutchinson, d=18112)
+  step     62  sensitivity measured in   7.9s  (estimator=hutchinson, d=18112)
+  step     94  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step    141  sensitivity measured in   7.9s  (estimator=hutchinson, d=18112)
+  step    214  sensitivity measured in   7.8s  (estimator=hutchinson, d=18112)
+  step    323  sensitivity measured in   7.8s  (estimator=hutchinson, d=18112)
+  step    488  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step    737  sensitivity measured in   7.8s  (estimator=hutchinson, d=18112)
+  step   1113  sensitivity measured in   8.0s  (estimator=hutchinson, d=18112)
+  step   1682  sensitivity measured in   7.4s  (estimator=hutchinson, d=18112)
+  step   2541  sensitivity measured in   7.9s  (estimator=hutchinson, d=18112)
+  step   3839  sensitivity measured in   7.4s  (estimator=hutchinson, d=18112)
+  step   5800  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  step   8762  sensitivity measured in   7.6s  (estimator=hutchinson, d=18112)
+  step  13238  sensitivity measured in   7.5s  (estimator=hutchinson, d=18112)
+  step  20000  sensitivity measured in   7.7s  (estimator=hutchinson, d=18112)
+  trained 20000 steps in 391s | {'test_loss': 1.5551901459693909, 'test_acc': 0.554638671875, 'test_ppl': 4.735986709594727}
+
+total 441s

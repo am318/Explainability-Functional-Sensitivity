@@ -1,0 +1,87 @@
+validating 65 configs on cpu (3 workers)
+
+[1/65] OK  e1-8e205b7cd7  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[2/65] OK  e1-b287480720  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[3/65] OK  e1-39315edc9a  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[4/65] OK  e1-a43fc32c6a  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[5/65] OK  e1-2a786c73d1  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[6/65] OK  e1-44e19e7040  vit/cifar10 steps=12000 params=2.69M estimator=auto
+[7/65] OK  e1-4a5f64e4e9  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[8/65] OK  e1-dc6013bb6c  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[9/65] OK  e1-379af6a39b  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[10/65] OK  e1-7fdd0ea9de  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[11/65] OK  e1-6fec63de5a  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[12/65] OK  e1-1a492aa508  resnet20/cifar10 steps=12000 params=0.27M estimator=auto
+[13/65] OK  e1-4c1488f844  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[14/65] OK  e1-a89a1ddebd  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[15/65] OK  e1-f406b2b0d5  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[16/65] OK  e1-6f8e8bd8ee  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[17/65] OK  e1-298542bca9  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[18/65] OK  e1-b7750a651c  mlp/cifar10 steps=12000 params=2.10M estimator=auto
+[19/65] FAIL jobs/e1/cfg_0020.json
+         FileNotFoundError: [Errno 2] No such file or directory: 'data/wikitext-2/train.txt'
+[20/65] FAIL jobs/e1/cfg_0021.json
+         FileNotFoundError: [Errno 2] No such file or directory: 'data/wikitext-2/train.txt'
+[21/65] OK  e2w-352bbeccf7  vit/cifar10 steps=2000 params=0.31M estimator=auto
+[22/65] OK  e1-73da714b16  vit/cifar100 steps=12000 params=2.71M estimator=auto
+[23/65] OK  e1-f85141ad94  vit/cifar100 steps=12000 params=2.71M estimator=auto
+[24/65] OK  e2w-d60bfccc40  vit/cifar10 steps=2000 params=1.21M estimator=auto
+[25/65] OK  e2w-15177b80ef  mlp/cifar10 steps=2000 params=0.43M estimator=auto
+[26/65] OK  e2w-429bcc4dc5  mlp/cifar10 steps=2000 params=0.92M estimator=auto
+[27/65] OK  e2w-893943f30e  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[28/65] OK  e2w-7f836da92b  mlp/cifar10 steps=2000 params=2.10M estimator=auto
+[29/65] OK  e2d-77af6207e2  vit/cifar10 steps=2000 params=0.91M estimator=auto
+[30/65] OK  e2w-64226daf98  mlp/cifar10 steps=2000 params=5.26M estimator=auto
+[31/65] OK  e2d-8cdce0e8e8  vit/cifar10 steps=2000 params=1.80M estimator=auto
+[32/65] OK  e2w-b2d7e22b0f  vit/cifar10 steps=2000 params=10.70M estimator=auto
+[33/65] OK  e2d-4c7cf4b043  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[34/65] OK  e2lr-7049529ae1  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[35/65] OK  e2d-a9c953c3d1  vit/cifar10 steps=2000 params=4.47M estimator=auto
+[36/65] OK  e2lr-78439d64dc  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[37/65] OK  e2lr-9163d6db73  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[38/65] OK  e2lr-dcdaf6aec4  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[39/65] OK  e2bs-b3470977e6  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[40/65] OK  e2bs-34be70e2b3  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[41/65] OK  e2bs-379cf52ce8  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[42/65] FAIL jobs/e4/cfg_0001.json
+         AttributeError: LazyScaled has no attribute `patch_embed`
+[43/65] FAIL jobs/e4/cfg_0002.json
+         AttributeError: LazyScaled has no attribute `patch_embed`
+[44/65] FAIL jobs/e4/cfg_0003.json
+         AttributeError: LazyScaled has no attribute `patch_embed`
+[45/65] OK  e2bs-13a6f436ce  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[46/65] FAIL jobs/e4/cfg_0005.json
+         AttributeError: LazyScaled has no attribute `body`
+[47/65] FAIL jobs/e4/cfg_0006.json
+         AttributeError: LazyScaled has no attribute `body`
+[48/65] FAIL jobs/e4/cfg_0007.json
+         AttributeError: LazyScaled has no attribute `body`
+[49/65] OK  e4-a1-f361cb74a8  mlp/cifar10 steps=2000 params=2.10M estimator=auto
+[50/65] OK  e4-a1-11f6078425  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[51/65] OK  e5-nowarm-d473a7eee1  resnet20/cifar10 steps=2000 params=0.27M estimator=auto
+[52/65] OK  e5-nowarm-ee81ac11d2  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[53/65] OK  e5-const-e824386add  resnet20/cifar10 steps=2000 params=0.27M estimator=auto
+[54/65] OK  e5-const-8bf5c7b0bf  vit/cifar10 steps=2000 params=2.69M estimator=auto
+[55/65] OK  e6-ffcbd01018  mlp/cifar10 steps=4000 params=2.10M estimator=auto
+[56/65] OK  e5-long-c2a5ae8c78  vit/cifar10 steps=16000 params=2.69M estimator=auto
+[57/65] OK  e6-4fe5fa168e  mlp/cifar10 steps=4000 params=2.10M estimator=auto
+[58/65] OK  e6-fc13214da4  resnet20/cifar10 steps=4000 params=0.27M estimator=auto
+[59/65] OK  e6-fb21e2c316  resnet20/cifar10 steps=4000 params=0.27M estimator=auto
+[60/65] OK  e7-constant-4ad5f99809  mlp/cifar10 steps=20000 params=2.10M estimator=auto
+[61/65] OK  e6-0a1ef5a9f1  vit/cifar10 steps=4000 params=2.69M estimator=auto
+[62/65] OK  e6-1e4c08b28d  vit/cifar10 steps=4000 params=2.69M estimator=auto
+[63/65] OK  e7-constant-3cb23be069  resnet20/cifar10 steps=20000 params=0.27M estimator=auto
+[64/65] OK  e7-cosine-ff44d65043  resnet20/cifar10 steps=20000 params=0.27M estimator=auto
+[65/65] OK  e7-cosine-9fbbfbbb81  mlp/cifar10 steps=20000 params=2.10M estimator=auto
+
+57/65 valid in 36603s
+
+FAILURES:
+  jobs/e1/cfg_0020.json: FileNotFoundError: [Errno 2] No such file or directory: 'data/wikitext-2/train.txt'
+  jobs/e1/cfg_0021.json: FileNotFoundError: [Errno 2] No such file or directory: 'data/wikitext-2/train.txt'
+  jobs/e4/cfg_0001.json: AttributeError: LazyScaled has no attribute `patch_embed`
+  jobs/e4/cfg_0002.json: AttributeError: LazyScaled has no attribute `patch_embed`
+  jobs/e4/cfg_0003.json: AttributeError: LazyScaled has no attribute `patch_embed`
+  jobs/e4/cfg_0005.json: AttributeError: LazyScaled has no attribute `body`
+  jobs/e4/cfg_0006.json: AttributeError: LazyScaled has no attribute `body`
+  jobs/e4/cfg_0007.json: AttributeError: LazyScaled has no attribute `body`

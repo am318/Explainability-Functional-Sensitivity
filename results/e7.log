@@ -1,0 +1,127 @@
+=== pilot done, starting e7 convergence test ===
+
+[1/4] e7-constant-16074afb06
+[e7-constant-16074afb06] mlp on cifar10 | 2.10M params (2.10M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  11.1s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  10.8s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  12.0s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  16.5s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  14.2s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  13.0s  (estimator=exact, d=10)
+  step     27  sensitivity measured in  11.8s  (estimator=exact, d=10)
+  step     41  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step     62  sensitivity measured in  12.1s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  12.1s  (estimator=exact, d=10)
+  step    141  sensitivity measured in  11.8s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step    323  sensitivity measured in  11.3s  (estimator=exact, d=10)
+  step    488  sensitivity measured in  14.5s  (estimator=exact, d=10)
+  step    737  sensitivity measured in  14.4s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in  13.7s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in  13.6s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in  12.5s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in 217.9s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in 102.2s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in  12.5s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  14.7s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in 298.6s  (estimator=exact, d=10)
+  trained 20000 steps in 7146s | {'test_loss': 1.2128002166748046, 'test_acc': 0.5848}
+
+[2/4] e7-cosine-9c68f00f4e
+[e7-cosine-9c68f00f4e] mlp on cifar10 | 2.10M params (2.10M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  16.1s  (estimator=exact, d=10)
+  step      1  sensitivity measured in 346.2s  (estimator=exact, d=10)
+  step      2  sensitivity measured in 1380.0s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  15.3s  (estimator=exact, d=10)
+  step      5  sensitivity measured in 1070.7s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  14.8s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  15.5s  (estimator=exact, d=10)
+  step     18  sensitivity measured in 3120.5s  (estimator=exact, d=10)
+  step     27  sensitivity measured in 1228.9s  (estimator=exact, d=10)
+  step     41  sensitivity measured in 2095.4s  (estimator=exact, d=10)
+  step     62  sensitivity measured in 449.4s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  14.8s  (estimator=exact, d=10)
+  step    141  sensitivity measured in 1093.3s  (estimator=exact, d=10)
+  step    214  sensitivity measured in 2931.0s  (estimator=exact, d=10)
+  step    323  sensitivity measured in 2983.3s  (estimator=exact, d=10)
+  step    488  sensitivity measured in 1991.5s  (estimator=exact, d=10)
+  step    737  sensitivity measured in 992.5s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in 1971.4s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in 1099.1s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in 2004.2s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in  11.0s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in 1221.0s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in 999.1s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  12.2s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in 1004.1s  (estimator=exact, d=10)
+  trained 20000 steps in 34020s | {'test_loss': 1.1683501800537108, 'test_acc': 0.61}
+
+[3/4] e7-constant-d0d68498d9
+[e7-constant-d0d68498d9] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  24.7s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  24.0s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  20.0s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  26.9s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  19.4s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  17.2s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  16.9s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  17.0s  (estimator=exact, d=10)
+  step     27  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step     41  sensitivity measured in  18.2s  (estimator=exact, d=10)
+  step     62  sensitivity measured in  19.9s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  19.8s  (estimator=exact, d=10)
+  step    141  sensitivity measured in  18.4s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  18.9s  (estimator=exact, d=10)
+  step    323  sensitivity measured in  18.4s  (estimator=exact, d=10)
+  step    488  sensitivity measured in  18.9s  (estimator=exact, d=10)
+  step    737  sensitivity measured in  18.4s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in  19.1s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in  18.2s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in  19.1s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in  17.9s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in  18.6s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in  18.6s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  17.9s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in 103.0s  (estimator=exact, d=10)
+  trained 20000 steps in 1282s | {'test_loss': 0.4040749740600586, 'test_acc': 0.8662}
+
+[4/4] e7-cosine-0ec03972af
+[e7-cosine-0ec03972af] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  21.9s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  31.7s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  20.0s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  17.2s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  17.9s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  17.5s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  17.7s  (estimator=exact, d=10)
+  step     27  sensitivity measured in  18.0s  (estimator=exact, d=10)
+  step     41  sensitivity measured in  18.2s  (estimator=exact, d=10)
+  step     62  sensitivity measured in  17.7s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step    141  sensitivity measured in  17.7s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  18.1s  (estimator=exact, d=10)
+  step    323  sensitivity measured in  17.5s  (estimator=exact, d=10)
+  step    488  sensitivity measured in  17.4s  (estimator=exact, d=10)
+  step    737  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in  17.6s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in  18.0s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in  18.2s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in  18.5s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  17.3s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in  17.7s  (estimator=exact, d=10)
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=7, pipe_handle=105)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/spawn.py", line 132, in _main
+    self = reduction.pickle.load(from_parent)
+_pickle.UnpicklingError: pickle data was truncated
+/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:297: UserWarning: resource_tracker: There appear to be 37 leaked semaphore objects to clean up at shutdown: {'/mp-bue50t30', '/mp-qqy37l4s', '/mp-quaelmf5', '/mp-04am2o89', '/mp-yszmdcux', '/mp-__g394cj', '/mp-shggkwsf', '/mp-2h6j5m4o', '/mp-fppyy27n', '/mp-3uns5usa', '/mp-w0uv9zot', '/mp-s_ndmkqu', '/mp-gez0gyvd', '/mp-nxhorcrc', '/mp-4g2053rb', '/mp-u9cyf_4r', '/mp-syo846yb', '/mp-883tg82v', '/mp-17y_jwob', '/mp-k9b16rbv', '/mp-vchcu24o', '/mp-comuykxi', '/mp-ekjj6p01', '/mp-y6y2z85y', '/mp-_x0vav0v', '/mp-e2xvnz2p', '/mp-shxsi562', '/mp-gnvvj8ft', '/mp-8pubr_c2', '/mp-fn0lso12', '/mp-n9fah57d', '/mp-j_ky4fj2', '/mp-7p0acst2', '/mp-79r20x2c', '/mp-si8kk2ul', '/mp-pw1ocxpv', '/mp-vh_x9g44'}
+  warnings.warn(

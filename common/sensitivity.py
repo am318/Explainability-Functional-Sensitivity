@@ -111,7 +111,14 @@ def compute_sensitivity(
     n_accum = 0
 
     batches = tqdm(loader, desc="sensitivity", leave=False, disable=not show_progress)
-    for inputs, _targets in batches:
+    # cuDNN refuses to run RNN *backward* when the module is in eval mode
+    # ("cudnn RNN backward can only be called in training mode"). We need
+    # eval mode here (to disable dropout etc.) but still require gradients
+    # through the LSTM, so disable the cuDNN RNN path for this computation
+    # and fall back to the native implementation, which has no such
+    # restriction. Negligible cost at sensitivity-scoring batch sizes.
+    with torch.backends.cudnn.flags(enabled=False):
+      for inputs, _targets in batches:
         # NOTE: no non_blocking=True here -- on MPS, an async H2D copy of a
         # non-pinned tensor can read stale/reused source memory before the
         # copy completes, silently corrupting the data (confirmed: produced

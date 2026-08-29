@@ -1,0 +1,14 @@
+
+=== mlp (min_keep=0.01) ===
+  [mlp] S at init in 9s; fine-tune budget 8000 steps
+    prune@0      ft=8000   sensitivity  sp=0.9   acc=0.5226 dead_layers=0 dead_units=0
+    prune@0      ft=8000   random       sp=0.9   acc=0.5848 dead_layers=0 dead_units=0
+    prune@0      ft=8000   magnitude    sp=0.9   acc=0.5934 dead_layers=0 dead_units=0
+    prune@0      ft=8000   sensitivity  sp=0.99  acc=0.2878 dead_layers=0 dead_units=0
+    prune@0      ft=8000   random       sp=0.99  acc=0.5602 dead_layers=0 dead_units=0
+    prune@0      ft=8000   magnitude    sp=0.99  acc=0.5606 dead_layers=0 dead_units=0
+
+=== resnet20 (min_keep=0.01) ===
+  [resnet20] S at init in 33s; fine-tune budget 16000 steps
+/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:297: UserWarning: resource_tracker: There appear to be 60 leaked semaphore objects to clean up at shutdown: {'/mp-fwxi2185', '/mp-45jnc41s', '/mp-s71lnk1t', '/mp-bi0zo7mz', '/mp-ofzskbuc', '/mp-s2zvob44', '/mp-y8heou92', '/mp-vbccjb5j', '/mp-h79um2ra', '/mp-_2ro_7j9', '/mp-hezy9njf', '/mp-moiuiyil', '/mp-r623rolr', '/mp-1a785gnh', '/mp-d4nuf02t', '/mp-dvj91ixa', '/mp-si2oncyv', '/mp-4x4kin16', '/mp-kq38v98r', '/mp-ezrwef76', '/mp-69l2k0xr', '/mp-6hniv5zy', '/mp-a35e8gmp', '/mp-gaz27f0y', '/mp-yegdm4cl', '/mp-t3bh_m69', '/mp-jfp7x_mu', '/mp-kghjkuse', '/mp-6x0bbr9j', '/mp-yle5t37r', '/mp-1as1agrn', '/mp-ze1gos0p', '/mp-aqk00med', '/mp-erlljfn0', '/mp-t8v8h3jt', '/mp-13bropk7', '/mp-p574id1y', '/mp-qu64yirp', '/mp-v5kck_en', '/mp-d_j1jiw4', '/mp-9t7jzgwd', '/mp-dpibp2ke', '/mp-u1fhyvur', '/mp-s9omx0sb', '/mp-j8lvbgat', '/mp-_8neczcm', '/mp-qx_32q0v', '/mp-oc5x8hhj', '/mp-h5pquj39', '/mp-8yxhep4c', '/mp-7ybe6nz1', '/mp-uukgvqcl', '/mp-napwy7ut', '/mp-6i56647o', '/mp-a56wgrmq', '/mp-pt872mpn', '/mp-lyk7z40z', '/mp-i06dg7zf', '/mp-0o9hd9dd', '/mp-8cj9z9mm'}
+  warnings.warn(

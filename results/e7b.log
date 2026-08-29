@@ -1,0 +1,61 @@
+=== e7 done, starting e7b (ViT long) ===
+
+[1/2] e7b-constant-4b28e432a2
+[e7b-constant-4b28e432a2] vit on cifar10 | 2.69M params (2.65M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  31.2s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  31.1s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  31.0s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  30.8s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  30.6s  (estimator=exact, d=10)
+  step     27  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step     41  sensitivity measured in  30.2s  (estimator=exact, d=10)
+  step     62  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step    141  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  30.8s  (estimator=exact, d=10)
+  step    323  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step    488  sensitivity measured in  29.9s  (estimator=exact, d=10)
+  step    737  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in  31.8s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in  30.2s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  30.3s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  trained 20000 steps in 4699s | {'test_loss': 0.6511225296020507, 'test_acc': 0.7832}
+
+[2/2] e7b-cosine-3563ca229e
+[e7b-cosine-3563ca229e] vit on cifar10 | 2.69M params (2.65M rankable) | 25 checkpoints | device=mps
+  step      0  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  30.1s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  31.3s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  30.0s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  29.7s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  30.2s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  30.1s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  31.0s  (estimator=exact, d=10)
+  step     27  sensitivity measured in  30.2s  (estimator=exact, d=10)
+  step     41  sensitivity measured in  30.0s  (estimator=exact, d=10)
+  step     62  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step     94  sensitivity measured in  29.9s  (estimator=exact, d=10)
+  step    141  sensitivity measured in  29.9s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  30.3s  (estimator=exact, d=10)
+  step    323  sensitivity measured in  31.0s  (estimator=exact, d=10)
+  step    488  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step    737  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step   1113  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step   1682  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step   2541  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step   3839  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step   5800  sensitivity measured in  30.8s  (estimator=exact, d=10)
+  step   8762  sensitivity measured in  30.4s  (estimator=exact, d=10)
+  step  13238  sensitivity measured in  30.8s  (estimator=exact, d=10)
+  step  20000  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  trained 20000 steps in 2104s | {'test_loss': 0.7179315856933594, 'test_acc': 0.7768}
+
+total 7431s

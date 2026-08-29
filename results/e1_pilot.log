@@ -1,0 +1,77 @@
+
+[1/3] e1p-9aec187ee9
+[e1p-9aec187ee9] mlp on cifar10 | 2.10M params (2.10M rankable) | 21 checkpoints | device=mps
+  step      0  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  12.3s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  14.3s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  13.2s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  12.1s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  12.1s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step     28  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step     42  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step     63  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step     96  sensitivity measured in  11.9s  (estimator=exact, d=10)
+  step    145  sensitivity measured in  11.6s  (estimator=exact, d=10)
+  step    219  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step    332  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step    503  sensitivity measured in  11.0s  (estimator=exact, d=10)
+  step    761  sensitivity measured in  11.7s  (estimator=exact, d=10)
+  step   1153  sensitivity measured in  10.9s  (estimator=exact, d=10)
+  step   1745  sensitivity measured in  11.6s  (estimator=exact, d=10)
+  step   2642  sensitivity measured in  11.3s  (estimator=exact, d=10)
+  step   4000  sensitivity measured in  11.4s  (estimator=exact, d=10)
+  trained 4000 steps in 277s | {'test_loss': 1.2142427673339844, 'test_acc': 0.5698}
+
+[2/3] e1p-8c0f9d5e00
+[e1p-8c0f9d5e00] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 21 checkpoints | device=mps
+  step      0  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  17.0s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  16.9s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  17.5s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  18.0s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  17.1s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  16.9s  (estimator=exact, d=10)
+  step     28  sensitivity measured in  16.9s  (estimator=exact, d=10)
+  step     42  sensitivity measured in  19.8s  (estimator=exact, d=10)
+  step     63  sensitivity measured in  20.3s  (estimator=exact, d=10)
+  step     96  sensitivity measured in  20.8s  (estimator=exact, d=10)
+  step    145  sensitivity measured in  23.4s  (estimator=exact, d=10)
+  step    219  sensitivity measured in  21.1s  (estimator=exact, d=10)
+  step    332  sensitivity measured in  18.0s  (estimator=exact, d=10)
+  step    503  sensitivity measured in  17.9s  (estimator=exact, d=10)
+  step    761  sensitivity measured in  17.7s  (estimator=exact, d=10)
+  step   1153  sensitivity measured in  18.5s  (estimator=exact, d=10)
+  step   1745  sensitivity measured in  17.5s  (estimator=exact, d=10)
+  step   2642  sensitivity measured in  17.8s  (estimator=exact, d=10)
+  step   4000  sensitivity measured in  17.6s  (estimator=exact, d=10)
+  trained 4000 steps in 515s | {'test_loss': 0.6812145263671875, 'test_acc': 0.758}
+
+[3/3] e1p-84953d2a11
+[e1p-84953d2a11] vit on cifar10 | 2.69M params (2.65M rankable) | 21 checkpoints | device=mps
+  step      0  sensitivity measured in  30.2s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  30.3s  (estimator=exact, d=10)
+  step      3  sensitivity measured in  29.6s  (estimator=exact, d=10)
+  step      5  sensitivity measured in  29.9s  (estimator=exact, d=10)
+  step      8  sensitivity measured in  29.5s  (estimator=exact, d=10)
+  step     12  sensitivity measured in  30.5s  (estimator=exact, d=10)
+  step     18  sensitivity measured in  31.9s  (estimator=exact, d=10)
+  step     28  sensitivity measured in  29.4s  (estimator=exact, d=10)
+  step     42  sensitivity measured in  32.1s  (estimator=exact, d=10)
+  step     63  sensitivity measured in  30.0s  (estimator=exact, d=10)
+  step     96  sensitivity measured in  29.7s  (estimator=exact, d=10)
+  step    145  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step    219  sensitivity measured in  30.7s  (estimator=exact, d=10)
+  step    332  sensitivity measured in  32.6s  (estimator=exact, d=10)
+  step    503  sensitivity measured in  34.4s  (estimator=exact, d=10)
+  step    761  sensitivity measured in  33.0s  (estimator=exact, d=10)
+  step   1153  sensitivity measured in  33.1s  (estimator=exact, d=10)
+  step   1745  sensitivity measured in  30.0s  (estimator=exact, d=10)
+  step   2642  sensitivity measured in  29.9s  (estimator=exact, d=10)
+  step   4000  sensitivity measured in  30.0s  (estimator=exact, d=10)
+  trained 4000 steps in 891s | {'test_loss': 1.0039293731689454, 'test_acc': 0.643}
+
+total 2231s

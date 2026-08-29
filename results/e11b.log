@@ -1,0 +1,15 @@
+=== E11 (sp 0.9/0.99) done, starting E11b (sp 0.5) ===
+
+=== mlp (min_keep=0.01, sp=[0.5]) ===
+  [mlp] S at init in 21s; fine-tune budget 8000 steps
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=7, pipe_handle=67)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/spawn.py", line 132, in _main
+    self = reduction.pickle.load(from_parent)
+_pickle.UnpicklingError: pickle data was truncated
+/opt/homebrew/Cellar/python@3.14/3.14.0/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:297: UserWarning: resource_tracker: There appear to be 31 leaked semaphore objects to clean up at shutdown: {'/mp-a8fmt_o3', '/mp-zhe1hk6g', '/mp-yr9iq1im', '/mp-_4yr3n6j', '/mp-orngv5ug', '/mp-5rvl7apa', '/mp-zu7zl5nl', '/mp-orbpn9ga', '/mp-0k62a2lm', '/mp-y4mditjb', '/mp-td0rmocy', '/mp-r4u1h45i', '/mp-vlwwlqhb', '/mp-9_g9ztx6', '/mp-090d8wam', '/mp-0nnd1jon', '/mp-ql2d82d3', '/mp-01t6we2n', '/mp-0byxm7o5', '/mp-p0a7rqyo', '/mp-61dxoe4_', '/mp-i89pct18', '/mp-5x74r_kt', '/mp-cxggrpxv', '/mp-52svxwgi', '/mp-02mx7408', '/mp-atajy22b', '/mp-8iv59b01', '/mp-fpbfw4tz', '/mp-0oq3mxio', '/mp-le72f81q'}
+  warnings.warn(

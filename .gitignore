@@ -6,3 +6,6 @@ Pruning_diagnostics/__pycache__
 logs
 Plots
 Pruning_diagnostics/data
+data
+*.npz
+*.pt

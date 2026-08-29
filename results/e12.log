@@ -1,0 +1,82 @@
+
+[1/4] e12-mlp-626392b220
+[e12-mlp-626392b220] mlp on cifar10 | 2.10M params (2.10M rankable) | 16 checkpoints | device=mps
+  step      0  sensitivity measured in  14.0s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step      4  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step      7  sensitivity measured in  12.4s  (estimator=exact, d=10)
+  step     15  sensitivity measured in  12.4s  (estimator=exact, d=10)
+  step     29  sensitivity measured in  12.6s  (estimator=exact, d=10)
+  step     56  sensitivity measured in  12.6s  (estimator=exact, d=10)
+  step    110  sensitivity measured in  12.6s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step    419  sensitivity measured in  12.2s  (estimator=exact, d=10)
+  step    820  sensitivity measured in  13.3s  (estimator=exact, d=10)
+  step   1604  sensitivity measured in  13.3s  (estimator=exact, d=10)
+  step   3136  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step   6135  sensitivity measured in  12.8s  (estimator=exact, d=10)
+  step  12000  sensitivity measured in  13.0s  (estimator=exact, d=10)
+  trained 12000 steps in 334s | {'test_loss': 1.257874005126953, 'test_acc': 0.555}
+
+[2/4] e12-mlp-238ae55f5a
+[e12-mlp-238ae55f5a] mlp on cifar10 | 2.10M params (2.10M rankable) | 16 checkpoints | device=mps
+  step      0  sensitivity measured in  12.6s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  13.7s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  12.9s  (estimator=exact, d=10)
+  step      4  sensitivity measured in  13.1s  (estimator=exact, d=10)
+  step      7  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step     15  sensitivity measured in  12.8s  (estimator=exact, d=10)
+  step     29  sensitivity measured in  12.9s  (estimator=exact, d=10)
+  step     56  sensitivity measured in  12.5s  (estimator=exact, d=10)
+  step    110  sensitivity measured in  12.7s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  13.8s  (estimator=exact, d=10)
+  step    419  sensitivity measured in  13.3s  (estimator=exact, d=10)
+  step    820  sensitivity measured in  15.1s  (estimator=exact, d=10)
+  step   1604  sensitivity measured in  12.6s  (estimator=exact, d=10)
+  step   3136  sensitivity measured in  13.4s  (estimator=exact, d=10)
+  step   6135  sensitivity measured in  15.1s  (estimator=exact, d=10)
+  step  12000  sensitivity measured in  15.5s  (estimator=exact, d=10)
+  trained 12000 steps in 435s | {'test_loss': 1.25500302734375, 'test_acc': 0.5614}
+
+[3/4] e12-resnet20-7cde0034d6
+[e12-resnet20-7cde0034d6] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 16 checkpoints | device=mps
+  step      0  sensitivity measured in  58.3s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  54.4s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  51.4s  (estimator=exact, d=10)
+  step      4  sensitivity measured in  46.2s  (estimator=exact, d=10)
+  step      7  sensitivity measured in  49.3s  (estimator=exact, d=10)
+  step     15  sensitivity measured in  35.3s  (estimator=exact, d=10)
+  step     29  sensitivity measured in  39.6s  (estimator=exact, d=10)
+  step     56  sensitivity measured in  51.5s  (estimator=exact, d=10)
+  step    110  sensitivity measured in  44.0s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  44.0s  (estimator=exact, d=10)
+  step    419  sensitivity measured in  38.9s  (estimator=exact, d=10)
+  step    820  sensitivity measured in  43.9s  (estimator=exact, d=10)
+  step   1604  sensitivity measured in  35.0s  (estimator=exact, d=10)
+  step   3136  sensitivity measured in  32.9s  (estimator=exact, d=10)
+  step   6135  sensitivity measured in  33.7s  (estimator=exact, d=10)
+  step  12000  sensitivity measured in  29.2s  (estimator=exact, d=10)
+  trained 12000 steps in 1839s | {'test_loss': 0.49448196258544924, 'test_acc': 0.8366}
+
+[4/4] e12-resnet20-2d97db52ed
+[e12-resnet20-2d97db52ed] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 16 checkpoints | device=mps
+  step      0  sensitivity measured in  34.6s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  33.4s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  27.7s  (estimator=exact, d=10)
+  step      4  sensitivity measured in  26.1s  (estimator=exact, d=10)
+  step      7  sensitivity measured in  30.9s  (estimator=exact, d=10)
+  step     15  sensitivity measured in  34.6s  (estimator=exact, d=10)
+  step     29  sensitivity measured in  34.1s  (estimator=exact, d=10)
+  step     56  sensitivity measured in  34.1s  (estimator=exact, d=10)
+  step    110  sensitivity measured in  34.2s  (estimator=exact, d=10)
+  step    214  sensitivity measured in  34.2s  (estimator=exact, d=10)
+  step    419  sensitivity measured in  34.1s  (estimator=exact, d=10)
+  step    820  sensitivity measured in  34.0s  (estimator=exact, d=10)
+  step   1604  sensitivity measured in  34.6s  (estimator=exact, d=10)
+  step   3136  sensitivity measured in  34.5s  (estimator=exact, d=10)
+  step   6135  sensitivity measured in 411.0s  (estimator=exact, d=10)
+  step  12000  sensitivity measured in  37.5s  (estimator=exact, d=10)
+  trained 12000 steps in 11487s | {'test_loss': 0.4659762924194336, 'test_acc': 0.8432}
+
+total 14718s

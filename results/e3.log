@@ -1,0 +1,45 @@
+=== phase 1: reference run e3ref-6b2398644d ===
+[e3ref-6b2398644d] resnet20 on cifar10 | 0.27M params (0.27M rankable) | 14 checkpoints | device=mps
+  step      0  sensitivity measured in  20.8s  (estimator=exact, d=10)
+  step      1  sensitivity measured in  19.4s  (estimator=exact, d=10)
+  step      2  sensitivity measured in  18.9s  (estimator=exact, d=10)
+  step      4  sensitivity measured in  19.0s  (estimator=exact, d=10)
+  step      9  sensitivity measured in  19.2s  (estimator=exact, d=10)
+  step     20  sensitivity measured in  19.2s  (estimator=exact, d=10)
+  step     42  sensitivity measured in  19.1s  (estimator=exact, d=10)
+  step     89  sensitivity measured in  19.1s  (estimator=exact, d=10)
+  step    189  sensitivity measured in  19.0s  (estimator=exact, d=10)
+  step    400  sensitivity measured in  19.3s  (estimator=exact, d=10)
+  step    846  sensitivity measured in  19.7s  (estimator=exact, d=10)
+  step   1789  sensitivity measured in  19.1s  (estimator=exact, d=10)
+  step   3783  sensitivity measured in  19.5s  (estimator=exact, d=10)
+  step   8000  sensitivity measured in  22.4s  (estimator=exact, d=10)
+  trained 8000 steps in 560s | {'test_loss': 0.4988000907897949, 'test_acc': 0.83}
+=== phase 2: prune at [0, 9, 400, 8000] x sparsity [0.9, 0.99] x ['sensitivity', 'random', 'magnitude'] ===
+    t* (crossing) = {'sp0.5_crossing': 8000, 'sp0.8_crossing': 8000, 'sp0.95_crossing': 8000, 'sp0.99_crossing': 8000, 'sp0.9_crossing': 8000}
+    prune@0      sensitivity  sp=0.9   acc=0.5472
+    prune@0      random       sp=0.9   acc=0.6580
+    prune@0      magnitude    sp=0.9   acc=0.7002
+    prune@0      sensitivity  sp=0.99  acc=0.1026
+    prune@0      random       sp=0.99  acc=0.1026
+    prune@0      magnitude    sp=0.99  acc=0.4898
+    prune@9      sensitivity  sp=0.9   acc=0.5834
+    prune@9      random       sp=0.9   acc=0.6646
+    prune@9      magnitude    sp=0.9   acc=0.7002
+    prune@9      sensitivity  sp=0.99  acc=0.1006
+    prune@9      random       sp=0.99  acc=0.0972
+    prune@9      magnitude    sp=0.99  acc=0.4954
+    prune@400    sensitivity  sp=0.9   acc=0.6926
+    prune@400    random       sp=0.9   acc=0.7478
+    prune@400    magnitude    sp=0.9   acc=0.7370
+    prune@400    sensitivity  sp=0.99  acc=0.3954
+    prune@400    random       sp=0.99  acc=0.5262
+    prune@400    magnitude    sp=0.99  acc=0.4970
+    prune@8000   sensitivity  sp=0.9   acc=0.1368
+    prune@8000   random       sp=0.9   acc=0.1378
+    prune@8000   magnitude    sp=0.9   acc=0.0988
+    prune@8000   sensitivity  sp=0.99  acc=0.1014
+    prune@8000   random       sp=0.99  acc=0.0986
+    prune@8000   magnitude    sp=0.99  acc=0.0990
+
+wrote results/e3ref-6b2398644d/prune_panel.json  (24 runs)
