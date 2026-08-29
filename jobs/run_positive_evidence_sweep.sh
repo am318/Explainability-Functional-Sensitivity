@@ -63,14 +63,14 @@ cfg.train.lr_schedule = 'constant'
 cfg.n_ckpts = 26
 cfg.keep_scores = 'all'
 cfg.track_criteria = False
-execute(cfg)
+execute(cfg, skip_done=True)
 \""
 done
 
 # ---- 2. reproducibility ceiling (E12), if not already emitted ------------------------
 if [ -d jobs/e12 ]; then
   for cfg in jobs/e12/cfg_*.json; do
-    add_task "$PY -m fsd.cli --config $cfg"
+    add_task "$PY -m fsd.cli --config $cfg --skip-done"
   done
 fi
 

@@ -34,7 +34,7 @@ import torch
 
 from fsd import config as C, models, sensitivity as S, storage
 from fsd.prune import prune_and_continue, unit_group_ids
-from fsd.run import build_optimizer
+from fsd.run import build_optimizer, _ensure_cudnn_usable
 from fsd.schedule import lr_at
 from fsd.tasks import build_task
 from experiments._common import base
@@ -76,6 +76,7 @@ def run(arch: str, seed: int, min_keep: float, out_dir: Path,
     cfg.train.steps = ft
 
     device = storage.pick_device(cfg.device)
+    _ensure_cudnn_usable(device)
     torch.manual_seed(cfg.seed)
     task = build_task(cfg, cfg.seed)
     model = models.build(cfg.model, cfg.data).to(device)

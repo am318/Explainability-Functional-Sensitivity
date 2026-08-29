@@ -67,14 +67,14 @@ if [ "$TIER" = "1" ] || [ "$TIER" = "all" ]; then
   #    where analysis/figures.py and analysis/claims.py already expect them.
   if [ -d jobs/e1 ]; then
     for cfg in jobs/e1/cfg_*.json; do
-      add_task "$PY -m fsd.cli --config $cfg"
+      add_task "$PY -m fsd.cli --config $cfg --skip-done"
     done
   fi
 
   # B) Reproducibility ceiling (E12): same-init, different-data-order pairs.
   if [ -d jobs/e12 ]; then
     for cfg in jobs/e12/cfg_*.json; do
-      add_task "$PY -m fsd.cli --config $cfg"
+      add_task "$PY -m fsd.cli --config $cfg --skip-done"
     done
   else
     add_task "$PY -m experiments.e12_ceiling --run --skip-done"
@@ -104,7 +104,7 @@ if [ "$TIER" = "2" ] || [ "$TIER" = "all" ]; then
   for exp in e2 e4 e5 e6 e7 e7b e8 e9 e10; do
     [ -d "jobs/$exp" ] || continue
     for cfg in "jobs/$exp"/cfg_*.json; do
-      add_task "$PY -m fsd.cli --config $cfg"
+      add_task "$PY -m fsd.cli --config $cfg --skip-done"
     done
   done
 fi

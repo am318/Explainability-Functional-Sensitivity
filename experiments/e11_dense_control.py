@@ -19,7 +19,7 @@ import torch
 
 from fsd import storage
 from fsd.tasks import build_task
-from fsd.run import build_optimizer
+from fsd.run import build_optimizer, _ensure_cudnn_usable
 from fsd.schedule import lr_at
 from fsd import models
 from experiments._common import base
@@ -35,6 +35,7 @@ def dense_control(arch: str, seed: int = 0) -> dict:
     cfg.train.steps = ft
 
     device = storage.pick_device(cfg.device)
+    _ensure_cudnn_usable(device)
     torch.manual_seed(cfg.seed)
     task = build_task(cfg, cfg.seed)
     model = models.build(cfg.model, cfg.data).to(device)
@@ -70,7 +71,13 @@ if __name__ == "__main__":
     ap.add_argument("--archs", default="mlp,resnet20,vit")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
-    results = {}
+    out_path = Path("results/_probe/dense_control.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Resume: keep any arch already recorded, only train the ones that are missing.
+    results = json.load(open(out_path)) if out_path.exists() else {}
     for arch in args.archs.split(","):
+        if arch in results:
+            print(f"  [{arch}] dense control already recorded -- skipping")
+            continue
         results[arch] = dense_control(arch, args.seed)
-    json.dump(results, open("results/_probe/dense_control.json", "w"), indent=2)
+        json.dump(results, open(out_path, "w"), indent=2)  # checkpoint after each arch

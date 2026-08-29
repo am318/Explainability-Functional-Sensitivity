@@ -24,6 +24,8 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--skip-done", action="store_true",
+                    help="if results/<run_id>/metrics.json already exists, skip this run")
     ap.add_argument("--print-id", action="store_true", help="print run id and exit")
     ap.add_argument("--dry-run", action="store_true",
                     help="build everything and take one step + one measurement, then exit; "
@@ -74,7 +76,7 @@ def main(argv=None) -> int:
               f"estimator={m['vs_final'][0].get('_est', probe.sens.estimator)}")
         return 0
 
-    metrics = execute(cfg, verbose=not args.quiet)
+    metrics = execute(cfg, verbose=not args.quiet, skip_done=args.skip_done)
     print(json.dumps({"run_id": metrics["run_id"], "tstar": metrics["tstar"],
                       "final_eval": metrics["final_eval"]}, indent=2))
     return 0

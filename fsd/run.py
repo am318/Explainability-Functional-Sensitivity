@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
@@ -24,6 +25,36 @@ from . import config as C
 from . import criteria as CR, models, rank_metrics as R, sensitivity as S, storage, theory as T
 from .schedule import log_checkpoints, lr_at
 from .tasks import build_task
+
+
+_CUDNN_PROBED = False
+
+
+def _ensure_cudnn_usable(device: torch.device) -> None:
+    """Probe cuDNN's conv path once per process; on a version-mismatch failure, disable
+    cuDNN and fall back to PyTorch's native convolution kernels.
+
+    Some cluster venvs ship mismatched cuDNN sublibraries
+    (RuntimeError: CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH), which kills the first conv2d
+    of every ViT/ResNet run while leaving MLP/GPT/LSTM untouched. Disabling cuDNN keeps
+    every architecture running -- ViT at ~full speed, ResNet with a modest conv slowdown --
+    rather than losing all image-model (and all CIFAR-100) results. No effect on a healthy
+    install: the probe succeeds and cuDNN stays on.
+    """
+    global _CUDNN_PROBED
+    if _CUDNN_PROBED or device.type != "cuda" or not torch.backends.cudnn.enabled:
+        return
+    _CUDNN_PROBED = True
+    try:
+        x = torch.zeros(1, 1, 8, 8, device=device)
+        w = torch.zeros(1, 1, 3, 3, device=device)
+        torch.nn.functional.conv2d(x, w)
+        torch.cuda.synchronize()
+    except RuntimeError as e:
+        torch.backends.cudnn.enabled = False
+        print(f"[fsd] cuDNN conv probe failed ({type(e).__name__}: "
+              f"{str(e).splitlines()[0].strip()}); disabling cuDNN for this process "
+              f"(native conv kernels; ViT ~unaffected, ResNet somewhat slower).")
 
 
 def build_optimizer(model: nn.Module, cfg):
@@ -39,14 +70,46 @@ def build_optimizer(model: nn.Module, cfg):
     return torch.optim.AdamW(groups, lr=cfg.lr, betas=(0.9, 0.999))
 
 
-def execute(cfg: C.RunCfg, verbose: bool = True) -> Dict[str, object]:
+def _load_if_done(cfg: C.RunCfg, verbose: bool) -> Optional[Dict[str, object]]:
+    """Return the cached metrics for this exact config if its run already finished.
+
+    run_id is a pure hash of the config, and metrics.json is written last and atomically,
+    so its presence at results/<run_id>/ means this run completed -- a re-invoked sweep
+    returns that instead of recomputing. A partial/corrupt file is ignored (recompute).
+    """
+    done_path = Path(cfg.out_dir) / cfg.run_id() / "metrics.json"
+    if not done_path.exists():
+        return None
+    try:
+        cached = json.loads(done_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if verbose:
+        print(f"[{cfg.run_id()}] metrics.json present -- skipping (skip_done)")
+    return cached
+
+
+def execute(cfg: C.RunCfg, verbose: bool = True, skip_done: bool = False) -> Dict[str, object]:
     device = storage.pick_device(cfg.device)
+    _ensure_cudnn_usable(device)
     torch.manual_seed(cfg.seed)
+
+    # Cheap pre-flight skip: for every non-text run (and any text run whose config already
+    # carries its vocab_size) run_id is final here, so we can bail before touching data.
+    if skip_done:
+        cached = _load_if_done(cfg, verbose)
+        if cached is not None:
+            return cached
 
     data_seed = cfg.seed if cfg.data_seed < 0 else cfg.data_seed
     task = build_task(cfg, cfg.seed, data_seed)
     if getattr(task, "is_text", False):
         cfg.model.vocab_size = task.vocab_size
+        # vocab_size just changed the hash; re-check before building/training anything.
+        if skip_done:
+            cached = _load_if_done(cfg, verbose)
+            if cached is not None:
+                return cached
 
     run = storage.Run(cfg.out_dir, cfg.run_id())
     C.dump(cfg, str(run.dir / "config.json"))
