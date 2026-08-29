@@ -9,8 +9,8 @@
 #
 # What it can fetch:
 #   cifar10  / cifar100  -- via torchvision (download=True)
-#   text corpora whose path is data/wikitext-2/{train,valid}.txt -- WikiText-2 zip, then
-#     the *.tokens files are copied to the {train,valid,test}.txt names fsd/data/text.py wants.
+#   text corpora whose path is data/wikitext-2/{train,valid}.txt -- fetched as plain
+#     text from the PyTorch examples repo (the old metamind S3 zip is dead).
 # Any other "text" corpus path that is missing is a hard error -- we have no source for it.
 
 ensure_data() {
@@ -65,28 +65,27 @@ datasets.CIFAR100(d, train=True, download=True); datasets.CIFAR100(d, train=Fals
     if [ "$base" = "wikitext-2" ]; then
       echo "[ensure_data] fetching WikiText-2 -> $dir"
       mkdir -p "$dir"
-      local zip="$dir/../wikitext-2-v1.zip"
-      local url="https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-v1.zip"
-      if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 3 -o "$zip" "$url"
-      else
-        wget -O "$zip" "$url"
+      # The old Salesforce/metamind S3 zip (research.metamind.io) is gone -- it now
+      # answers with a tiny XML error body, which is why unzip died with BadZipFile.
+      # WikiText-2 ships as plain text with the official PyTorch examples repo; pull
+      # the splits straight from there (same source as tests/fetch_data.py).
+      local wiki="https://raw.githubusercontent.com/pytorch/examples/main/word_language_model/data/wikitext-2"
+      local split
+      for split in train valid test; do
+        [ -s "$dir/$split.txt" ] && continue
+        if command -v curl >/dev/null 2>&1; then
+          curl -fL --retry 3 -A "Mozilla/5.0" -o "$dir/$split.txt" "$wiki/$split.txt"
+        else
+          wget --header="User-Agent: Mozilla/5.0" -O "$dir/$split.txt" "$wiki/$split.txt"
+        fi
+        [ -s "$dir/$split.txt" ] && echo "  wrote $dir/$split.txt" || rm -f "$dir/$split.txt"
+      done
+      if [ ! -s "$dir/train.txt" ]; then
+        echo "[ensure_data] ERROR: could not fetch WikiText-2 train split from $wiki" >&2
+        return 1
       fi
-      "$py" - "$zip" "$dir" <<'PY'
-import sys, zipfile, pathlib
-zpath, out = sys.argv[1], pathlib.Path(sys.argv[2])
-out.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(zpath) as z:
-    for member in z.namelist():
-        name = pathlib.Path(member).name          # e.g. wiki.train.tokens
-        if name.startswith("wiki.") and name.endswith(".tokens"):
-            split = name.split(".")[1]            # train | valid | test
-            (out / f"{split}.txt").write_bytes(z.read(member))
-            print("  wrote", out / f"{split}.txt")
-PY
-      rm -f "$zip"
-      if [ ! -s "$dir/valid.txt" ] && [ -s "$dir/train.txt" ]; then
-        cp "$dir/train.txt" "$dir/valid.txt"      # be defensive; text.py needs a val split
+      if [ ! -s "$dir/valid.txt" ]; then
+        cp "$dir/train.txt" "$dir/valid.txt"      # be defensive; keep a val split on disk
       fi
     else
       echo "[ensure_data] ERROR: text corpus '$tf' is missing and no download source is known." >&2
