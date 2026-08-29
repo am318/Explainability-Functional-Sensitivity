@@ -11,5 +11,5 @@ Pruning_diagnostics/data
 *.log
 *.tar.gz
 *.pt
-data
+/data
 *.png
