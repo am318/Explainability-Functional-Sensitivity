@@ -35,28 +35,35 @@
 \@writefile{toc}{\contentsline {section}{\numberline {6}What bounds rank churn}{5}{section.6}\protected@file@percent }
 \newlabel{sec:theory}{{6}{5}{What bounds rank churn}{section.6}{}}
 \newlabel{prop:stability}{{1}{5}{Trajectory rank stability}{proposition.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Reproducibility ceiling: how much of $S_T$ is even knowable}{6}{section.7}\protected@file@percent }
+\newlabel{sec:ceiling}{{7}{6}{Reproducibility ceiling: how much of $S_T$ is even knowable}{section.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{A cautionary methodological note.}{6}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Consequence for pruning}{6}{section.8}\protected@file@percent }
+\newlabel{sec:consequence}{{8}{6}{Consequence for pruning}{section.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Discussion and limitations}{6}{section.9}\protected@file@percent }
 \bibstyle{plainnat}
 \bibdata{refs}
 \bibcite{jacot2018ntk}{{1}{2018}{{Jacot et~al.}}{{Jacot, Gabriel, and Hongler}}}
 \bibcite{lee2019snip}{{2}{2019}{{Lee et~al.}}{{Lee, Ajanthan, and Torr}}}
 \bibcite{su2020sanity}{{3}{2020}{{Su et~al.}}{{}}}
 \bibcite{tanaka2020synflow}{{4}{2020}{{Tanaka et~al.}}{{}}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Consequence for pruning}{6}{section.7}\protected@file@percent }
-\newlabel{sec:consequence}{{7}{6}{Consequence for pruning}{section.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Discussion and limitations}{6}{section.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Limitations.}{6}{section*.14}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {A}Stability curves}{6}{appendix.A}\protected@file@percent }
-\newlabel{app:curves}{{A}{6}{Stability curves}{appendix.A}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {B}Proof of Proposition~\ref {prop:stability}}{6}{appendix.B}\protected@file@percent }
-\newlabel{app:proof}{{B}{6}{Proof of Proposition~\ref {prop:stability}}{appendix.B}{}}
+\@writefile{toc}{\contentsline {paragraph}{Limitations.}{7}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}Stability curves}{7}{appendix.A}\protected@file@percent }
+\newlabel{app:curves}{{A}{7}{Stability curves}{appendix.A}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Chance-corrected agreement between the ordering at step $t$ and the final ordering, at three sparsities, with within-layer rank correlation (dashed) and the fold-based measurement ceiling (dotted). No curve reaches the ceiling before training ends.}}{7}{figure.2}\protected@file@percent }
 \newlabel{fig:stability}{{2}{7}{Chance-corrected agreement between the ordering at step $t$ and the final ordering, at three sparsities, with within-layer rank correlation (dashed) and the fold-based measurement ceiling (dotted). No curve reaches the ceiling before training ends}{figure.2}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {C}Further experiments this draft could be extended with}{7}{appendix.C}\protected@file@percent }
-\newlabel{app:pending}{{C}{7}{Further experiments this draft could be extended with}{appendix.C}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Metrics used in the figures and tables. $A_k(\theta )$ denotes the top-$k$ set of $S(\theta )$; $\ell $ indexes parameter tensors (layers); $p_\ell $ and $k_\ell $ are a layer's parameter count and kept count.}}{8}{table.1}\protected@file@percent }
-\newlabel{tab:metrics}{{1}{8}{Metrics used in the figures and tables. $A_k(\theta )$ denotes the top-$k$ set of $S(\theta )$; $\ell $ indexes parameter tensors (layers); $p_\ell $ and $k_\ell $ are a layer's parameter count and kept count}{table.1}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces When each statistic first reaches $0.7$ against the final ordering, as a fraction of total training, across six long runs (20{,}000 steps, constant LR, trained well past the point of accuracy improvement). ``top-$k$'' is raw (uncorrected) overlap at sparsity $0.9$; component is the analogous overlap over output units. $t^*$ (the threshold-free crossing defined in Sec.~\ref {sec:protocol}) is never reached before $T$ in any setting.}}{8}{table.2}\protected@file@percent }
-\newlabel{tab:main}{{2}{8}{When each statistic first reaches $0.7$ against the final ordering, as a fraction of total training, across six long runs (20{,}000 steps, constant LR, trained well past the point of accuracy improvement). ``top-$k$'' is raw (uncorrected) overlap at sparsity $0.9$; component is the analogous overlap over output units. $t^*$ (the threshold-free crossing defined in Sec.~\ref {sec:protocol}) is never reached before $T$ in any setting}{table.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Dead output units (of $794$ total) under unconstrained global top-$k$, by criterion and sparsity, ResNet-20 at initialisation. A unit with every incoming weight pruned is functionally deleted even when its layer is not.}}{9}{table.3}\protected@file@percent }
-\newlabel{tab:collapse}{{3}{9}{Dead output units (of $794$ total) under unconstrained global top-$k$, by criterion and sparsity, ResNet-20 at initialisation. A unit with every incoming weight pruned is functionally deleted even when its layer is not}{table.3}{}}
-\gdef \@abspage@last{9}
+\@writefile{toc}{\contentsline {section}{\numberline {B}Proof of Proposition~\ref {prop:stability}}{7}{appendix.B}\protected@file@percent }
+\newlabel{app:proof}{{B}{7}{Proof of Proposition~\ref {prop:stability}}{appendix.B}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}Further experiments this draft could be extended with}{8}{appendix.C}\protected@file@percent }
+\newlabel{app:pending}{{C}{8}{Further experiments this draft could be extended with}{appendix.C}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Metrics used in the figures and tables. $A_k(\theta )$ denotes the top-$k$ set of $S(\theta )$; $\ell $ indexes parameter tensors (layers); $p_\ell $ and $k_\ell $ are a layer's parameter count and kept count.}}{9}{table.1}\protected@file@percent }
+\newlabel{tab:metrics}{{1}{9}{Metrics used in the figures and tables. $A_k(\theta )$ denotes the top-$k$ set of $S(\theta )$; $\ell $ indexes parameter tensors (layers); $p_\ell $ and $k_\ell $ are a layer's parameter count and kept count}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces When each statistic first reaches $0.7$ against the final ordering, as a fraction of total training, across six long runs (20{,}000 steps, constant LR, trained well past the point of accuracy improvement). ``top-$k$'' is raw (uncorrected) overlap at sparsity $0.9$; component is the analogous overlap over output units. $t^*$ (the threshold-free crossing defined in Sec.~\ref {sec:protocol}) is never reached before $T$ in any setting.}}{9}{table.2}\protected@file@percent }
+\newlabel{tab:main}{{2}{9}{When each statistic first reaches $0.7$ against the final ordering, as a fraction of total training, across six long runs (20{,}000 steps, constant LR, trained well past the point of accuracy improvement). ``top-$k$'' is raw (uncorrected) overlap at sparsity $0.9$; component is the analogous overlap over output units. $t^*$ (the threshold-free crossing defined in Sec.~\ref {sec:protocol}) is never reached before $T$ in any setting}{table.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Dead output units (of $794$ total) under unconstrained global top-$k$, by criterion and sparsity, ResNet-20 at initialisation. A unit with every incoming weight pruned is functionally deleted even when its layer is not.}}{10}{table.3}\protected@file@percent }
+\newlabel{tab:collapse}{{3}{10}{Dead output units (of $794$ total) under unconstrained global top-$k$, by criterion and sparsity, ResNet-20 at initialisation. A unit with every incoming weight pruned is functionally deleted even when its layer is not}{table.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Reproducibility ceiling and what $S_0$ captures of it, within-layer.}}{10}{table.4}\protected@file@percent }
+\newlabel{tab:ceiling}{{4}{10}{Reproducibility ceiling and what $S_0$ captures of it, within-layer}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Prune-at-initialisation, fine-tuned to the architecture's full step budget, against a matched dense control. MLP (secondary: does not clear an $80\%$+ accuracy floor, included only for the sparsity-dependence shape) and ResNet-20 (primary; grid incomplete, see note above).}}{10}{table.5}\protected@file@percent }
+\newlabel{tab:consequence}{{5}{10}{Prune-at-initialisation, fine-tuned to the architecture's full step budget, against a matched dense control. MLP (secondary: does not clear an $80\%$+ accuracy floor, included only for the sparsity-dependence shape) and ResNet-20 (primary; grid incomplete, see note above)}{table.5}{}}
+\gdef \@abspage@last{10}

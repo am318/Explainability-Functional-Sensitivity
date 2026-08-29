@@ -903,3 +903,42 @@ analysis so every future/cluster run reports them automatically. New experiment
 `experiments/e15_early_window.py` for the properly-bounded early-window-averaging test
 (previous scripts share saved-trajectory data with this but nothing tested a
 *deliberately* bounded early window before).
+
+### 2026-08-29 — Correction: the AUROC/calibration "positive evidence" was mostly the layer-budget confound again
+
+Before writing up the positive-evidence sweep, checked whether the strong global AUROC
+numbers (0.65-0.82 at high sparsity) survive the same within-layer control that this
+project applies everywhere else. They do not, mostly.
+
+| | ResNet-20 global | ResNet-20 within-layer | ViT global | ViT within-layer |
+|---|---|---|---|---|
+| AUROC, S_0 predicts top-1%(S_T) | 0.797 | **0.515** (~chance) | 0.820 | **0.569** (weak) |
+
+Within-layer AUROC is computed layer-by-layer (top-k membership defined WITHIN each
+layer's own weights) then size-weighted averaged, the same construction as
+`within_layer_spearman`. Once the layer-budget confound is removed, ResNet-20's apparent
+0.80 AUROC collapses to indistinguishable from chance, and ViT's shrinks from 0.82 to a
+modest 0.57. **The calibration-decile test is almost certainly the same story** (global
+deciles are dominated by which layer a parameter belongs to, given orders-of-magnitude
+layer-scale differences) and should be treated as unverified until a within-layer version
+is run.
+
+**The reproducibility-ceiling numbers (E12) are the trustworthy version of "positive
+evidence" already in hand**, since they were within-layer from the start:
+- MLP: S_0 captures **+36.4%** of the achievable ceiling at init -- genuine, modest,
+  positive.
+- ResNet-20: S_0 is **-32%** of the achievable ceiling at init (worse than useless),
+  crossing into positive territory only ~1% into training, reaching parity with the
+  ceiling around ~7%.
+
+**Correct conclusion**: whether early sensitivity predicts final importance is
+architecture-dependent even within-layer, ranges from modestly positive (MLP) to actively
+negative-then-recovering (ResNet-20), and the headline AUROC numbers from the positive-
+evidence sweep must NOT be quoted without the within-layer correction -- doing so would
+repeat exactly the error this project spent the most effort catching elsewhere (raw
+overlap / global rho / naive top-k all inflated by the same mechanism).
+
+**Action**: `fsd/rank_metrics.py`'s `auroc_topk` needs a within-layer variant
+(`auroc_topk_within_layer`, mirroring `within_layer_spearman`) added before the positive-
+evidence report is trusted for the paper. Not yet implemented -- flagged in SUMMARY.md's
+experiments-to-do list.

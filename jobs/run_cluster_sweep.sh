@@ -43,6 +43,11 @@ echo "=== cluster sweep: $N_GPUS GPUs, tier=$TIER, archs=$ARCHS, seed=$SEED ==="
 echo "logs: $LOG_DIR/   readable report: results/REPORT.md (written at the end)"
 date
 
+# Datasets: configs ship "download": false on purpose (no parallel-unpack races). Fetch
+# anything missing here, once, serially, before the workers start.
+source "$(dirname "${BASH_SOURCE[0]}")/_ensure_data.sh"
+ensure_data "./data" "$PY"
+
 # --------------------------------------------------------------------------------------
 # A simple 4-way (or N-way) job queue: every "task" below is a single shell command.
 # Tasks are appended to an array; at the end we fan them out round-robin across N_GPUS

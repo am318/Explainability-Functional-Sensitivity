@@ -532,36 +532,109 @@ these disaggregated, since the variation is the informative part.
 %% replicate on the n=5 long-run set (2 of 3 signs inverted) and has been dropped from this
 %% draft entirely -- do not reintroduce it without re-deriving and re-testing on n>=5.
 
+\section{Reproducibility ceiling: how much of $S_T$ is even knowable}
+\label{sec:ceiling}
+%% NEW SECTION as of 2026-08-29. CUT-CANDIDATE only as a whole if space is desperate --
+%% this is the most defensible form of "early sensitivity predicts the trained network"
+%% available and directly answers the natural reviewer question "0.16 correlation, is that
+%% good or bad?" Keep at minimum the two ceiling numbers and the interpretation rule.
+
+Every agreement number in Sec.~\ref{sec:results} implicitly targets $1.0$. That target is
+wrong: $S_T$ is the endpoint of a stochastic trajectory, and part of it is irreducibly
+run-specific (determined by batch order), which no predictor computed before training can
+ever access. We measure the achievable ceiling directly: $\rho(S_T^A, S_T^B)$ within-layer,
+for two runs sharing an initialisation and differing \emph{only} in batch order --- the only
+well-posed cross-run comparison, since parameter indices from different initialisations are
+related by a hidden permutation and are not comparable at all.
+
+\begin{table}[h]
+  \caption{Reproducibility ceiling and what $S_0$ captures of it, within-layer.}
+  \label{tab:ceiling}
+  \centering
+  \small
+  \begin{tabular}{lrrr}
+    \toprule
+    Model & ceiling $\rho(S_T^A,S_T^B)$ & $\rho(S_0,S_T)$ & fraction of ceiling at init \\
+    \midrule
+    MLP       & 0.288 & 0.105  & $+36.4\%$ \\
+    ResNet-20 & 0.278 & $-0.090$ & $-32.2\%$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Both ceilings are low: two runs from an identical initialisation, trained to convergence,
+agree with each other at only $\rho\approx0.28$ within-layer. Most of what $S_T$ looks like
+is not a deterministic function of architecture and initialisation. Against that honest
+denominator, the two architectures tell \emph{different} stories: the MLP's initial
+ordering captures a genuine, if modest, fraction of what is knowable; the ResNet's is
+\emph{worse than a coin flip} at initialisation, only crossing into positive territory
+around $1\%$ of training and reaching ceiling parity around $7\%$. Whether early sensitivity
+predicts final importance is therefore architecture-dependent even after the ceiling
+correction, and averaging across architectures would hide the disagreement rather than
+resolve it.
+
+\paragraph{A cautionary methodological note.} A natural next step is to ask whether $S_0$
+separates the eventual top-$k$ set as a binary classifier (AUROC) rather than getting the
+exact rank right. Computed naively (globally, not within-layer) this looks strikingly
+positive: AUROC $0.80$--$0.82$ at high sparsity. It does not survive the within-layer
+control used everywhere else in this paper --- ResNet-20's $0.80$ collapses to $0.52$
+(indistinguishable from chance) within-layer; ViT's $0.82$ shrinks to $0.57$. This is the
+same layer-budget confound as Sec.~\ref{sec:protocol}'s chance correction, recurring in a
+metric that was not obviously susceptible to it. We report this as a warning: any new
+resemblance statistic proposed for this quantity should be checked within-layer before
+being trusted, since the failure mode recurs across metrics that look structurally
+different.
+
 \section{Consequence for pruning}
 \label{sec:consequence}
-%% PENDING -- ENTIRE SECTION. E11 (prune-and-continue, structurally-corrected masks per
-%% Sec 6, fixed generous fine-tune budget with trajectory tracking to distinguish "slower
-%% to recover" from "permanently worse", three architectures: MLP/ResNet-20/ViT) is running
-%% now. An EARLIER, uncorrected version of this experiment (masks not checked for the
-%% Sec 6 failure mode) found sensitivity losing to both magnitude and layer-budget-matched
-%% random at every prune time and sparsity tested -- but those masks were later found to be
-%% degenerate (Sec 6) and the comparison has been WITHDRAWN. Do not cite the old numbers
-%% (sensitivity 0.10-0.55, magnitude 0.10-0.70 range) anywhere in this paper; they measured
-%% architecture tolerance to disconnection, not criterion quality.
-%%
-%% Once E11 completes, this section should report: (i) final accuracy, sensitivity vs.
-%% magnitude vs. layer+unit-budget-matched random, at a fixed generous fine-tune budget,
-%% for prune time = initialisation (the zero-shot case the companion paper depends on);
-%% (ii) whether the recovery trajectory for sensitivity is still climbing when the others
-%% plateau (answers "is it just slower" vs. "permanently worse" -- the reason
-%% eval_every/trajectory tracking was added); (iii) whether the pattern is
-%% architecture-general or ResNet-specific, given ResNet's residual paths structurally
-%% tolerate dead units in a way MLP/ViT do not.
-%%
-%% A stronger version of this section, if time allows: a "branching trajectory" figure
-%% (dense baseline's own loss curve as a trunk, one branch per prune time reconnecting to
-%% the trunk at its fork point) -- this framing exists in a companion codebase
-%% (shakespeare\_lstm/plot\_pruning\_story.py) and would communicate the recovery-speed
-%% question more directly than a bar table.
-This section is intentionally left as a placeholder pending E11 (see note above); we
-expect it to report whether $t^*$, or the granularity ladder of Sec.~\ref{sec:results},
-predicts the sparsity- and prune-time-dependent cost of pruning early, once measured on
-valid (Sec.~\ref{sec:collapse}-corrected) masks.
+%% PENDING: full grid incomplete. E14 (prune-and-continue, structurally-corrected masks
+%% per Sec 6, fixed fine-tune budget, dense control matched to the EXACT same
+%% steps/schedule/seed) is the current run. ResNet-20 is the priority architecture: it is
+%% the only one clearing an 80-90%+ dense-accuracy floor (MLP's dense ceiling is ~59% on
+%% CIFAR-10, architectural, not a training-length artifact -- see Sec 6 for why MLP data
+%% is reported only as a secondary/shape reference below). ResNet-20's grid is CURRENTLY
+%% ONLY 2 OF 27 CELLS COMPLETE (the background sweep died across a session interruption
+%% and was not relaunched before this draft was written) -- see SUMMARY.md P0 item 1 for
+%% the exact relaunch command. Table~\ref{tab:consequence} below must be extended before
+%% submission; do not present it as complete.
+An earlier, uncorrected version of this comparison (masks not checked for the
+Sec.~\ref{sec:collapse} failure mode) found sensitivity losing to both magnitude and
+layer-budget-matched random at every prune time and sparsity tested -- those masks were
+later found to be degenerate and \textbf{the comparison was withdrawn}. The numbers below
+use the count-preserving floors of Sec.~\ref{sec:collapse} throughout, and a dense control
+trained under the identical step budget, schedule, and seed as the pruned arms (an earlier
+mismatched baseline, from a differently-configured run, had made magnitude appear to
+\emph{exceed} dense pruning at $90\%$ sparsity; that was entirely the mismatch, not a real
+effect, once corrected).
+
+\begin{table}[h]
+  \caption{Prune-at-initialisation, fine-tuned to the architecture's full step budget,
+  against a matched dense control. MLP (secondary: does not clear an $80\%$+ accuracy
+  floor, included only for the sparsity-dependence shape) and ResNet-20 (primary; grid
+  incomplete, see note above).}
+  \label{tab:consequence}
+  \centering
+  \small
+  \begin{tabular}{llrrrr}
+    \toprule
+    Model & sparsity & sensitivity & random (budget-matched) & magnitude & dense \\
+    \midrule
+    MLP       & 0.50 & 0.595 & 0.600 & --    & 0.592 \\
+    MLP       & 0.90 & 0.523 & 0.585 & 0.593 & 0.592 \\
+    MLP       & 0.99 & 0.288 & 0.560 & 0.561 & 0.592 \\
+    ResNet-20 & 0.20 & 0.869 & 0.864 & --    & 0.872 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The one pattern visible even in this incomplete data: sensitivity's deficit relative to the
+other two criteria is large at high sparsity and shrinks to approximately zero at moderate
+sparsity ($0.5$) -- consistent with Sec.~\ref{sec:collapse}'s finding that structural
+damage (and thus the accuracy cost of a poor criterion) is concentrated at higher
+sparsities, not a fixed weakness of the criterion at every operating point. This is
+directly relevant to $t^*$ and the granularity ladder of Sec.~\ref{sec:results}: we expect,
+once the grid is complete, to test whether $t^*$ predicts the prune-time beyond which
+sensitivity's deficit closes.
 
 \section{Discussion and limitations}
 
@@ -630,24 +703,39 @@ $N_{\theta'}(2\Delta)$. Dividing by $k$ and noting $|A_k|=k$ yields the overlap 
 \label{app:pending}
 %% This appendix section exists purely as a checklist for the authors; it does not need to
 %% survive into any submitted version and can be deleted wholesale. Kept here rather than
-%% only in the narrative log so it travels with the .tex file.
+%% only in the narrative log so it travels with the .tex file. Updated 2026-08-29 against
+%% actual current state -- see SUMMARY.md for the full account and priority order.
 \begin{itemize}\itemsep2pt
+\item \textbf{[P0] Finish the ResNet-20 prune grid} (Sec.~\ref{sec:consequence}):
+  Table~\ref{tab:consequence} is only $2$ of $27$ planned cells. This is the single most
+  important missing piece of evidence -- ResNet-20 is the only architecture clearing an
+  $80$--$90\%$+ dense-accuracy floor, so it is the load-bearing result for the whole
+  section. Relaunch command and estimated $8.4$h runtime in \texttt{SUMMARY.md} \S4.
+\item \textbf{[P0] Within-layer AUROC/calibration}: the naive global versions
+  (Sec.~\ref{sec:ceiling}) were found to reproduce the layer-budget confound after this
+  draft's headline numbers were otherwise settled. A within-layer AUROC function exists;
+  a within-layer calibration-decile function does not yet and is needed before any
+  calibration claim can be cited.
 \item \textbf{Component-granularity table completion} (Sec.~\ref{sec:results}): fill in
   the missing "component" column of Table~\ref{tab:main} for five of six settings; data
   already computed, just not tabulated.
-\item \textbf{E11 prune-and-continue panel} (Sec.~\ref{sec:consequence}): running at time
-  of writing; MLP, ResNet-20, ViT, structurally-corrected masks, fixed generous fine-tune
-  budget with recovery trajectories.
 \item \textbf{Structural-collapse generality} (Sec.~\ref{sec:collapse}): currently
-  ResNet-20 only; MLP and ViT probes running, needed to know whether the collapse
-  mechanism and its $\sim\!2\times$ early-layer-damage ratio are general or specific to
-  ResNet's residual paths.
-\item \textbf{Same-init, different-data-order transfer} (E6/\texttt{cross\_run.py}):
-  directly tests whether an early mask transfers across a different training run from the
-  same initialisation -- the question closest to what the companion pruning paper needs.
-\item \textbf{More seeds}: every long run in this draft is $n=1$. Cluster job arrays for
-  3 seeds x every architecture/dataset combination are emitted and validated
-  (\texttt{jobs/e1}, \texttt{jobs/e8}) but not submitted.
+  ResNet-20 only. Needed to know whether the collapse mechanism and its
+  $\sim\!2\times$ early-layer-damage ratio are general or specific to ResNet's residual
+  paths tolerating dead units in a way MLP/ViT may not.
+\item \textbf{Same-init, different-data-order mask transfer} (E6/\texttt{cross\_run.py}):
+  does an early mask from one run predict a \emph{different} run's final ordering from the
+  same init? Implemented, not yet analysed -- the question closest to what the companion
+  pruning paper needs answered.
+\item \textbf{More seeds, more architectures}: every long run in this draft is $n=1$.
+  Cluster sweep scripts (\texttt{jobs/run\_cluster\_sweep.sh},
+  \texttt{jobs/run\_positive\_evidence\_sweep.sh}, 4 GPUs hardwired,
+  \texttt{bash script.sh} invocation) are written and locally dry-run validated, but the
+  one attempted run on the target cluster failed on every task -- root cause not yet
+  diagnosed (no traceback was captured; \texttt{SUMMARY.md} \S4 P1.3 lists the likely
+  causes to check first).
+\item \textbf{ViT / GPT / LSTM reproducibility ceilings}: Sec.~\ref{sec:ceiling} currently
+  covers MLP and ResNet-20 only.
 \item \textbf{Branching-trajectory figure}: dense-run loss as a trunk with one
   reconnecting branch per prune time, adapted from a companion codebase's
   \texttt{plot\_pruning\_story.py}; would make the recovery-speed argument in

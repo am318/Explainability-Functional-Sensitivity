@@ -36,6 +36,11 @@ PY="./venv/bin/python"
 echo "=== positive-evidence sweep: $N_GPUS GPUs, seed=$SEED ==="
 date
 
+# Datasets: fetch anything missing once, serially, before the workers start (the emitted
+# configs ship "download": false so N parallel workers never race to unpack a tarball).
+source "$(dirname "${BASH_SOURCE[0]}")/_ensure_data.sh"
+ensure_data "./data" "$PY"
+
 TASKS=()
 add_task() { TASKS+=("$1"); }
 
