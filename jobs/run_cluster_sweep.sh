@@ -45,7 +45,7 @@ date
 
 # Datasets: configs ship "download": false on purpose (no parallel-unpack races). Fetch
 # anything missing here, once, serially, before the workers start.
-source "$(dirname "${BASH_SOURCE[0]}")/_ensure_data.sh"
+source jobs/_ensure_data.sh   # cwd is repo root (cd'd above)
 ensure_data "./data" "$PY"
 
 # --------------------------------------------------------------------------------------

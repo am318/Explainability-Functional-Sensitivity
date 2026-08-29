@@ -38,7 +38,7 @@ date
 
 # Datasets: fetch anything missing once, serially, before the workers start (the emitted
 # configs ship "download": false so N parallel workers never race to unpack a tarball).
-source "$(dirname "${BASH_SOURCE[0]}")/_ensure_data.sh"
+source jobs/_ensure_data.sh   # cwd is repo root (cd'd above)
 ensure_data "./data" "$PY"
 
 TASKS=()
