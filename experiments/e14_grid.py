@@ -47,8 +47,8 @@ FT = {"mlp": 8000, "resnet20": 16000, "vit": 8000}
 # 48-cell grid an ~15h commitment, too close to the deadline to risk. Reduced to 3x3=9
 # (prune,sparsity) cells x 3 methods = 27, keeping both axes' endpoints and midpoint so
 # the grid shape is still legible -- ~8.4h, fits an overnight run with margin.
-PRUNE_FRACS = [0.0, 0.25, 0.50]
-SPARSITIES = [0.20, 0.50, 0.90]
+PRUNE_FRACS = [0.0, 0.2, 0.40, 0.60]
+SPARSITIES = [0.20, 0.40, 0.60, 80]
 CRITERIA = ["sensitivity", "random", "magnitude"]
 
 
