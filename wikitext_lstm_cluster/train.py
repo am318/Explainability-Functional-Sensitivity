@@ -25,7 +25,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -109,6 +109,25 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def tune_backend(device: torch.device) -> None:
+    """Cheap, results-neutral throughput knobs for CUDA. TF32 tensor-core
+    matmul (the tied (seq*batch, embed) x (embed, vocab) head dominates the
+    FLOPs) and cuDNN autotuning are standard "why is my H100 idle" fixes;
+    input shapes here are fixed (drop_last=True, fixed SEQ_LENGTH) so
+    benchmark=True has a stable set of shapes to tune against. Neither
+    changes the training math in any way that matters for loss or
+    sensitivity magnitudes. (The WeightDrop recompaction warning from
+    torch/nn/modules/rnn.py is unrelated and unavoidable: WeightDrop swaps a
+    fresh non-Parameter weight_hh in every forward, so cuDNN cannot keep the
+    LSTM weights in one contiguous block -- that cost is intrinsic to
+    DropConnect-on-cuDNN and is not what these flags address.)"""
+    if device.type != "cuda":
+        return
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
+
 def select_device() -> torch.device:
     forced = os.environ.get("DEVICE")
     if forced:
@@ -128,11 +147,13 @@ def build_model(cfg: Config, vocab_size: int, device: torch.device) -> AWDLSTM:
     ).to(device)
 
 
-def build_loaders(cfg: Config) -> tuple:
+def build_loaders(cfg: Config, device: Optional[torch.device] = None) -> tuple:
     """Returns (train_loader, probe_loader, vocab_size). Train batches are
     shuffled chunks of the train split; probe batches are a fixed (seeded)
     subset of chunks from the real validation split, capped at
     cfg.sensitivity_chunks."""
+    if device is None:
+        device = select_device()
     dictionary, train_ids, valid_ids, _test_ids = build_corpus(cfg.data_dir)
 
     train_dataset = WordSequenceDataset(train_ids, cfg.seq_length)
@@ -143,8 +164,24 @@ def build_loaders(cfg: Config) -> tuple:
     probe_indices = torch.randperm(len(valid_dataset), generator=generator)[:n_probe].tolist()
     probe_subset = Subset(valid_dataset, probe_indices)
 
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
-    probe_loader = DataLoader(probe_subset, batch_size=cfg.sensitivity_batch_size, shuffle=False, drop_last=False)
+    # On CUDA, overlap host->device copies with compute: pinned staging
+    # buffers + a couple of loader workers + non_blocking .to() in the loop.
+    # NUM_WORKERS is overridable (0 keeps the old fully-synchronous path,
+    # e.g. for debugging). pin_memory is CUDA-only; on MPS/CPU it is
+    # pointless and pinned+non_blocking is the exact combination the
+    # dataset.py comment warns is unsafe on MPS, so it stays off there.
+    num_workers = _env_int("NUM_WORKERS", 4 if device.type == "cuda" else 0)
+    pin_memory = device.type == "cuda"
+    loader_kw = dict(num_workers=num_workers, pin_memory=pin_memory)
+    if num_workers > 0:
+        loader_kw["persistent_workers"] = True
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True, **loader_kw
+    )
+    probe_loader = DataLoader(
+        probe_subset, batch_size=cfg.sensitivity_batch_size, shuffle=False, drop_last=False, **loader_kw
+    )
     return train_loader, probe_loader, len(dictionary)
 
 
@@ -160,13 +197,14 @@ def train_one_epoch(
     model.train()
     loss_sum = 0.0
     n = 0
+    # non_blocking is safe only for CUDA with pinned host memory (see
+    # build_loaders); on MPS/CPU an async copy of a non-pinned tensor can
+    # silently corrupt data (see shakespeare_lstm/pruning_experiment.py).
+    non_blocking = device.type == "cuda"
     batches = tqdm(loader, desc=f"epoch {epoch} [train]", leave=False)
     for inputs, targets in batches:
-        # No non_blocking=True: unsafe on MPS with non-pinned tensors, can
-        # silently corrupt data (see shakespeare_lstm/pruning_experiment.py
-        # for the investigation that found this).
-        inputs = inputs.to(device)
-        targets = targets.to(device)
+        inputs = inputs.to(device, non_blocking=non_blocking)
+        targets = targets.to(device, non_blocking=non_blocking)
         optimizer.zero_grad(set_to_none=True)
         logits, _ = model(inputs)
         loss = criterion(logits.reshape(-1, model.vocab_size), targets.reshape(-1))
@@ -185,10 +223,11 @@ def main() -> None:
     cfg = Config()
     set_seed(cfg.seed)
     device = select_device()
+    tune_backend(device)
     print(f"Using device: {device}")
     print(f"Experiment: {cfg.experiment_name} -> {cfg.output_dir}")
 
-    train_loader, probe_loader, vocab_size = build_loaders(cfg)
+    train_loader, probe_loader, vocab_size = build_loaders(cfg, device)
     print(
         f"Vocab size: {vocab_size}, train chunks: {len(train_loader.dataset)}, "
         f"probe chunks: {len(probe_loader.dataset)}, {len(train_loader)} train batches/epoch"
